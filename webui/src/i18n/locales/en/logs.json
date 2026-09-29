@@ -47,6 +47,7 @@
     "project": "Project",
     "status": "Status",
     "tokens": "Tokens",
+    "cache": "Cached",
     "size": "Response Size",
     "duration": "Duration",
     "provider_model": "Provider Model",
@@ -61,6 +62,7 @@
   },
   "mobile": {
     "tokens": "Tokens",
+    "cache": "Cache",
     "duration": "Duration",
     "provider": "Provider",
     "type": "Type"
@@ -92,6 +94,7 @@
     "output": "Output",
     "total": "Total",
     "cached": "Cached",
+    "cache_rate": "Cache Rate",
     "io_yes": "Yes",
     "io_no": "No",
     "billing": "Billing",
