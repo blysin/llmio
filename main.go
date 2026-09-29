@@ -120,10 +120,15 @@ func main() {
 
 	api := router.Group("/api", middleware.Auth(token))
 	{
-		// Analytics aggregation. 单端点覆盖时间序列、多维下钻、延迟分布与错误分析，
+		// Analytics aggregation (upstream). 单端点覆盖时间序列、多维下钻、延迟分布与错误分析，
 		// 保证一次请求对应一个时间切片（见 handler/stats.go 的说明）。
 		api.GET("/metrics/stats", handler.Stats)
 		api.GET("/metrics/granularities", handler.StatsGranularities)
+		// 系统概览 metrics (feat/token-usage-trend): 缓存 Token 统计、Tokens 用量趋势、按调用/Tokens 口径排行
+		api.GET("/metrics/use/:days", handler.Metrics)
+		api.GET("/metrics/timeline", handler.Timeline)
+		api.GET("/metrics/counts", handler.Counts)
+		api.GET("/metrics/projects", handler.ProjectCounts)
 		// Provider management
 		api.GET("/providers/template", handler.GetProviderTemplates)
 		api.GET("/providers", handler.GetProviders)
