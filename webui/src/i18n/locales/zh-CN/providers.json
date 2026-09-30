@@ -35,6 +35,13 @@
     "edit_desc": "修改提供商信息",
     "name_label": "名称",
     "type_label": "类型",
+    "category_label": "分类",
+    "category": {
+      "other": "其他",
+      "opencode": "OpenCode",
+      "commandcode": "CommandCode"
+    },
+    "category_hint": "分类仅用于标记渠道归属，不影响接口协议；选择 OpenCode / CommandCode 会展示用量。",
     "no_types": "暂无可用类型，请先配置模板。",
     "config_label": "配置",
     "no_config": "当前提供商类型暂无额外配置。",
@@ -58,7 +65,14 @@
   },
   "usage": {
     "resets_at": "重置时间",
-    "unsupported": "该提供商类型不支持用量查询"
+    "resets_in": "（{{time}}后重置）",
+    "resetting": "即将重置",
+    "unsupported": "该提供商分类不支持用量查询",
+    "duration": {
+      "days": "{{count}}天",
+      "hours": "{{count}}小时",
+      "minutes": "{{count}}分钟"
+    }
   },
   "toast": {
     "fetch_failed": "获取提供商列表失败: {{message}}",

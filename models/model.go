@@ -12,6 +12,7 @@ type Provider struct {
 	gorm.Model
 	Name         string
 	Type         string
+	Category     string // 供应商分类（other/opencode/commandcode），仅用于展示增强，不影响协议
 	Config       string
 	Console      string // 控制台地址
 	Proxy        string // HTTP 代理地址

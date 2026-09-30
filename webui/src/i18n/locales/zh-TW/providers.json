@@ -35,6 +35,13 @@
     "edit_desc": "修改供應商資訊",
     "name_label": "名稱",
     "type_label": "類型",
+    "category_label": "分類",
+    "category": {
+      "other": "其他",
+      "opencode": "OpenCode",
+      "commandcode": "CommandCode"
+    },
+    "category_hint": "分類僅用於標記渠道歸屬，不影響介面協定；選擇 OpenCode / CommandCode 會顯示用量。",
     "no_types": "暫無可用類型，請先設定範本。",
     "config_label": "設定",
     "no_config": "目前供應商類型暫無額外設定。",
@@ -58,7 +65,14 @@
   },
   "usage": {
     "resets_at": "重置時間",
-    "unsupported": "此供應商類型不支援用量查詢"
+    "resets_in": "（{{time}}後重置）",
+    "resetting": "即將重置",
+    "unsupported": "此供應商分類不支援用量查詢",
+    "duration": {
+      "days": "{{count}}天",
+      "hours": "{{count}}小時",
+      "minutes": "{{count}}分鐘"
+    }
   },
   "toast": {
     "fetch_failed": "取得供應商列表失敗: {{message}}",

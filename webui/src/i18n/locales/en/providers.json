@@ -35,6 +35,13 @@
     "edit_desc": "Update provider information",
     "name_label": "Name",
     "type_label": "Type",
+    "category_label": "Category",
+    "category": {
+      "other": "Other",
+      "opencode": "OpenCode",
+      "commandcode": "CommandCode"
+    },
+    "category_hint": "Category only tags the channel and does not affect the API protocol. Selecting OpenCode / CommandCode enables usage display.",
     "no_types": "No types available. Please configure a template first.",
     "config_label": "Config",
     "no_config": "No additional configuration for this provider type.",
@@ -58,7 +65,14 @@
   },
   "usage": {
     "resets_at": "Resets at",
-    "unsupported": "Usage is not supported for this provider type"
+    "resets_in": "(resets in {{time}})",
+    "resetting": "resetting soon",
+    "unsupported": "Usage is not supported for this provider category",
+    "duration": {
+      "days": "{{count}}d",
+      "hours": "{{count}}h",
+      "minutes": "{{count}}m"
+    }
   },
   "toast": {
     "fetch_failed": "Failed to fetch providers: {{message}}",
