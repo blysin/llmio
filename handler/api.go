@@ -22,10 +22,19 @@ import (
 type ProviderRequest struct {
 	Name         string `json:"name"`
 	Type         string `json:"type"`
+	Category     string `json:"category"`
 	Config       string `json:"config"`
 	Console      string `json:"console"`
 	Proxy        string `json:"proxy"`
 	ErrorMatcher string `json:"error_matcher"`
+}
+
+// normalizeCategory 把空分类归一为 other，避免历史数据或手工调用落下空值。
+func normalizeCategory(category string) string {
+	if category == "" {
+		return consts.ProviderCategoryOther
+	}
+	return category
 }
 
 // ModelRequest represents the request body for creating/updating a model
@@ -125,7 +134,8 @@ func GetProviderModels(c *gin.Context) {
 	common.Success(c, models)
 }
 
-// GetProviderUsage 拉取供应商用量（当前仅 opencode / commandcode 支持）。
+// GetProviderUsage 拉取供应商用量（按 Category 分派，当前仅 opencode / commandcode 两个分类支持），
+// 与上游协议（provider Type）无关。
 // 不支持的类型返回 supported=false；支持但拉取失败返回 supported=true + error，
 // 让前端能区分「不支持」与「查询失败」，而不是一律显示 '-'。
 func GetProviderUsage(c *gin.Context) {
@@ -136,9 +146,9 @@ func GetProviderUsage(c *gin.Context) {
 		return
 	}
 
-	usage, err := providers.FetchUsage(c.Request.Context(), provider.Type, provider.Config, provider.Proxy)
+	usage, err := providers.FetchUsage(c.Request.Context(), provider.Category, provider.Config, provider.Proxy)
 	if err != nil {
-		slog.Warn("fetch provider usage failed", "provider", provider.Name, "type", provider.Type, "err", err)
+		slog.Warn("fetch provider usage failed", "provider", provider.Name, "category", provider.Category, "err", err)
 		common.Success(c, map[string]any{
 			"supported": true,
 			"error":     err.Error(),
@@ -172,6 +182,7 @@ func CreateProvider(c *gin.Context) {
 	provider := models.Provider{
 		Name:         req.Name,
 		Type:         req.Type,
+		Category:     normalizeCategory(req.Category),
 		Config:       req.Config,
 		Console:      req.Console,
 		Proxy:        req.Proxy,
@@ -215,6 +226,7 @@ func UpdateProvider(c *gin.Context) {
 	updates := models.Provider{
 		Name:         req.Name,
 		Type:         req.Type,
+		Category:     normalizeCategory(req.Category),
 		Config:       req.Config,
 		Console:      req.Console,
 		Proxy:        req.Proxy,
@@ -530,20 +542,6 @@ var template = []ProviderTemplate{
 			"base_url": "https://api.anthropic.com/v1",
 			"api_key": "YOUR_API_KEY",
 			"version": "2023-06-01"
-		}`,
-	},
-	{
-		Type: "opencode",
-		Template: `{
-			"base_url": "https://opencode.ai/zen/go/v1",
-			"api_key": "YOUR_API_KEY"
-		}`,
-	},
-	{
-		Type: "commandcode",
-		Template: `{
-			"base_url": "https://api.commandcode.ai/provider/v1",
-			"api_key": "YOUR_API_KEY"
 		}`,
 	},
 }

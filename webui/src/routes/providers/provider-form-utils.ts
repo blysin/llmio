@@ -2,6 +2,14 @@ import type { ProviderTemplate } from "@/lib/api";
 
 export type ConfigFieldMap = Record<string, string>;
 
+// 供应商分类对应的默认 base_url，仅用于表单预填（分类本身不参与协议与校验）。
+// opencode 的用量地址由该 base_url 推导（base_url + /usage）；commandcode 的用量地址另在
+// 后端按分类硬编码（与 base_url 不同源），此处只负责把渠道的 API base 填给用户。
+export const CATEGORY_DEFAULT_BASE_URL: Record<string, string> = {
+  opencode: "https://opencode.ai/zen/go/v1",
+  commandcode: "https://api.commandcode.ai/provider/v1",
+};
+
 export const parseConfigJson = (raw?: string | null): ConfigFieldMap | null => {
   if (!raw) return null;
 
