@@ -2,10 +2,19 @@
 
 const API_BASE = '/api';
 
+// 供应商分类：与上游协议（Type）相互独立，仅用于标记渠道归属（当前决定是否展示用量）。
+export type ProviderCategory = "other" | "opencode" | "commandcode";
+
+export const PROVIDER_CATEGORIES: ProviderCategory[] = ["other", "opencode", "commandcode"];
+
+// 仅这些分类的上游提供用量接口；其余分类不展示用量。
+export const USAGE_SUPPORTED_CATEGORIES: readonly string[] = ["opencode", "commandcode"];
+
 export interface Provider {
   ID: number;
   Name: string;
   Type: string;
+  Category?: string;
   Config: string;
   Console: string;
   Proxy: string;
@@ -149,6 +158,7 @@ export async function getProviders(filters: {
 export async function createProvider(provider: {
   name: string;
   type: string;
+  category: string;
   config: string;
   console: string;
   proxy: string;
@@ -163,6 +173,7 @@ export async function createProvider(provider: {
 export async function updateProvider(id: number, provider: {
   name?: string;
   type?: string;
+  category?: string;
   config?: string;
   console?: string;
   proxy?: string;

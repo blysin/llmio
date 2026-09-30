@@ -31,7 +31,8 @@ import {
   getProviderModels,
   getProviderUsage
 } from "@/lib/api";
-import type { Provider, ProviderTemplate, ProviderModel, ProviderUsage, UsageWindow } from "@/lib/api";
+import { USAGE_SUPPORTED_CATEGORIES } from "@/lib/api";
+import type { Provider, ProviderTemplate, ProviderModel, ProviderUsage } from "@/lib/api";
 import { copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
 import { ExternalLink, Pencil, Trash2, Boxes, RefreshCw, TriangleAlert } from "lucide-react";
@@ -41,9 +42,35 @@ import { useProviderForm } from "@/routes/providers/use-provider-form";
 import { getConfigBaseUrl } from "@/routes/providers/provider-form-utils";
 
 // 用量百分比保留一位小数，去掉无意义的 .0
-const formatUsagePercent = (window: UsageWindow) => {
-  const percent = Math.round(window.percent * 10) / 10;
-  return `${percent}%`;
+const formatUsagePercent = (percent: number) => `${Math.round(percent * 10) / 10}%`;
+
+// 把重置时间折算成单一最大单位（如 25天 / 2小时 / 30分钟）。
+// 纯函数只做时间计算并返回结构，文案与 i18n key 在组件内拼装，避免动态 key 破坏 key 类型校验。
+type ResetHint =
+  | { kind: "resetting"; title: string }
+  | { kind: "duration"; unit: "days" | "hours" | "minutes"; count: number; title: string };
+
+const formatResetCountdown = (iso: string): ResetHint | null => {
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) {
+    return null;
+  }
+  const diffMs = target - Date.now();
+  // 已到重置时刻（或时钟误差导致略微为负）统一显示「即将重置」
+  if (diffMs <= 0) {
+    return { kind: "resetting", title: new Date(target).toLocaleString() };
+  }
+  const minutes = Math.floor(diffMs / 60000);
+  const hours = Math.floor(diffMs / 3600000);
+  const days = Math.floor(diffMs / 86400000);
+  const title = new Date(target).toLocaleString();
+  if (days >= 1) {
+    return { kind: "duration", unit: "days", count: days, title };
+  }
+  if (hours >= 1) {
+    return { kind: "duration", unit: "hours", count: hours, title };
+  }
+  return { kind: "duration", unit: "minutes", count: Math.max(minutes, 1), title };
 };
 
 export default function ProvidersPage() {
@@ -75,6 +102,7 @@ export default function ProvidersPage() {
     openEditDialog,
     openCreateDialog,
     handleConfigFieldChange,
+    handleCategoryChange,
     submit,
   } = useProviderForm({
     providerTemplates,
@@ -114,6 +142,8 @@ export default function ProvidersPage() {
   // 并发拉取列表内每个供应商的用量；单个失败只影响该行，不拖垮整页。
   // usageRequestedRef 记录已发起过请求的 provider，避免筛选框每敲一次键都重打上游
   // （列表会被 name 筛选高频刷新，用量属于上游限额资源，只在首次与手动刷新时拉取）。
+  // 仅支持用量的分类才打上游，其余分类（如「其他」）直接落 supported=false；
+  // 后端同样会按分类兜底判断，这里只是省一次无谓往返。
   const fetchUsages = async (list: Provider[], force = false) => {
     if (force) {
       usageRequestedRef.current.clear();
@@ -124,11 +154,25 @@ export default function ProvidersPage() {
     }
     targets.forEach((provider) => usageRequestedRef.current.add(provider.ID));
 
+    const next: Record<number, ProviderUsage> = {};
+    const requestable: Provider[] = [];
+    for (const provider of targets) {
+      if (USAGE_SUPPORTED_CATEGORIES.includes(provider.Category ?? "")) {
+        requestable.push(provider);
+      } else {
+        next[provider.ID] = { supported: false };
+      }
+    }
+
+    if (requestable.length === 0) {
+      setUsageMap((prev) => ({ ...prev, ...next }));
+      return;
+    }
+
     setUsageLoading(true);
     try {
-      const next: Record<number, ProviderUsage> = {};
       await Promise.all(
-        targets.map(async (provider) => {
+        requestable.map(async (provider) => {
           try {
             next[provider.ID] = await getProviderUsage(provider.ID);
           } catch (err) {
@@ -165,12 +209,32 @@ export default function ProvidersPage() {
     if (!window) {
       return <span className="text-muted-foreground">-</span>;
     }
-    const title = window.resets_at
-      ? `${t('usage.resets_at')}: ${new Date(window.resets_at).toLocaleString()}`
-      : undefined;
+    const hint = window.resets_at ? formatResetCountdown(window.resets_at) : null;
+    // 单位文案用显式 key 分支，避免动态拼接 key（i18n key 有编译期校验）
+    let resetText: string | null = null;
+    if (hint?.kind === "resetting") {
+      resetText = t('usage.resetting');
+    } else if (hint?.kind === "duration") {
+      const count = hint.count;
+      if (hint.unit === "days") {
+        resetText = t('usage.duration.days', { count });
+      } else if (hint.unit === "hours") {
+        resetText = t('usage.duration.hours', { count });
+      } else {
+        resetText = t('usage.duration.minutes', { count });
+      }
+    }
     return (
-      <span className={window.status === "exceeded" ? "font-medium text-destructive" : "font-medium"} title={title}>
-        {formatUsagePercent(window)}
+      <span
+        className={window.status === "exceeded" ? "font-medium text-destructive" : "font-medium"}
+        title={hint?.title}
+      >
+        {formatUsagePercent(window.percent)}
+        {resetText && (
+          <span className="text-muted-foreground font-normal">
+            {t('usage.resets_in', { time: resetText })}
+          </span>
+        )}
       </span>
     );
   };
@@ -307,7 +371,7 @@ export default function ProvidersPage() {
           <div className="h-full flex flex-col">
             <div className="hidden sm:block flex-1 overflow-y-auto">
               <div className="w-full">
-                <Table className="min-w-[1500px]">
+                <Table className="min-w-[1720px]">
                   <TableHeader className="z-10 sticky top-0 bg-secondary/80 text-secondary-foreground">
                     <TableRow>
                       <TableHead>{t('table.id')}</TableHead>
@@ -469,6 +533,7 @@ export default function ProvidersPage() {
         structuredConfigEnabled={structuredConfigEnabled}
         configFields={configFields}
         onConfigFieldChange={handleConfigFieldChange}
+        onCategoryChange={handleCategoryChange}
         onSubmit={submit}
       />
 

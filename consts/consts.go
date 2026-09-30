@@ -9,10 +9,14 @@ const (
 	StyleGemini    Style = "gemini"
 )
 
-// 以下为 OpenAI 兼容的第三方聚合渠道，复用 openai 的请求构建与模型列表逻辑
+// ProviderCategory 是供应商分类，仅用于标记渠道归属（当前用于决定是否展示用量）。
+// 与 Style（上游协议）相互独立：分类不参与请求构建，改分类不会影响接口协议与路由。
+type ProviderCategory = string
+
 const (
-	StyleOpenCode    Style = "opencode"
-	StyleCommandCode Style = "commandcode"
+	ProviderCategoryOther       ProviderCategory = "other"
+	ProviderCategoryOpenCode    ProviderCategory = "opencode"
+	ProviderCategoryCommandCode ProviderCategory = "commandcode"
 )
 
 const (

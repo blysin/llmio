@@ -18,6 +18,11 @@ const (
 	// 无法由 base_url 推导，故按类型硬编码。
 	commandCodeUsageURL = "https://api.commandcode.ai/alpha/billing/credits"
 
+	// commandCodeSubscriptionURL 是 commandcode 的订阅接口地址，用于取月度周期的重置时间。
+	// credits 接口只给 month 剩余额度、不含重置时间，故月度重置时间从订阅的
+	// currentPeriodEnd 读取；同样与 base_url 不同源，按类型硬编码。
+	commandCodeSubscriptionURL = "https://api.commandcode.ai/alpha/billing/subscriptions"
+
 	// commandCodeMonthlyQuota 是 commandcode 的固定月度信用额度，
 	// 用于把「剩余信用点数」折算成月度用量百分比。
 	commandCodeMonthlyQuota = 262.0
@@ -41,14 +46,14 @@ type ProviderUsage struct {
 	Monthly   *UsageWindow `json:"monthly,omitempty"`
 }
 
-// FetchUsage 按 provider 类型拉取并归一化用量。
-// 目前仅 opencode / commandcode 提供用量接口，其余类型返回 Supported=false（err 为 nil）；
-// 支持的类型但拉取失败时返回 nil + err，由调用方决定如何降级。
-func FetchUsage(ctx context.Context, providerType, providerConfig, proxy string) (*ProviderUsage, error) {
-	switch providerType {
-	case consts.StyleOpenCode:
+// FetchUsage 按供应商分类拉取并归一化用量。
+// 分类与上游协议（provider Type）无关：仅 opencode / commandcode 两个分类提供用量接口，
+// 其余分类返回 Supported=false（err 为 nil）；支持但拉取失败时返回 nil + err，由调用方决定如何降级。
+func FetchUsage(ctx context.Context, category, providerConfig, proxy string) (*ProviderUsage, error) {
+	switch category {
+	case consts.ProviderCategoryOpenCode:
 		return fetchOpenCodeUsage(ctx, providerConfig, proxy)
-	case consts.StyleCommandCode:
+	case consts.ProviderCategoryCommandCode:
 		return fetchCommandCodeUsage(ctx, providerConfig, proxy)
 	default:
 		return &ProviderUsage{Supported: false}, nil
@@ -174,6 +179,13 @@ func (w *commandCodeWindow) toWindow() *UsageWindow {
 	}
 }
 
+// commandCodeSubscriptionResponse 是订阅接口响应；月度重置时间取 data.currentPeriodEnd。
+type commandCodeSubscriptionResponse struct {
+	Data struct {
+		CurrentPeriodEnd string `json:"currentPeriodEnd"`
+	} `json:"data"`
+}
+
 func fetchCommandCodeUsage(ctx context.Context, providerConfig, proxy string) (*ProviderUsage, error) {
 	_, apiKey, err := usageCredentials(providerConfig)
 	if err != nil {
@@ -188,11 +200,19 @@ func fetchCommandCodeUsage(ctx context.Context, providerConfig, proxy string) (*
 	// 约定口径：月度用量 =（月度信用 + 已购信用 + 赠送信用）/ 固定额度。
 	monthlyPercent := (res.Credits.MonthlyCredits + res.Credits.PurchasedCredits + res.Credits.FreeCredits) / commandCodeMonthlyQuota * 100
 
+	monthly := &UsageWindow{Percent: monthlyPercent}
+	// credits 只给 fiveHour / weekly 的重置时间，月度重置时间另行从订阅接口读取。
+	// 该请求失败只导致 monthly 缺一个重置时间，不应让整个用量查询失败，故单独容错。
+	var sub commandCodeSubscriptionResponse
+	if err := getUsageJSON(ctx, commandCodeSubscriptionURL, apiKey, proxy, &sub); err == nil {
+		monthly.ResetsAt = normalizeRFC3339(sub.Data.CurrentPeriodEnd)
+	}
+
 	return &ProviderUsage{
 		Supported: true,
 		Rolling:   res.WindowLimits.FiveHour.toWindow(),
 		Weekly:    res.WindowLimits.Weekly.toWindow(),
-		Monthly:   &UsageWindow{Percent: monthlyPercent},
+		Monthly:   monthly,
 	}, nil
 }
 
