@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,39 +22,46 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Panel } from "@/components/panel";
-import { ErrorState, ListSkeleton } from "@/components/state-views";
+import Loading from "@/components/loading";
 import { Label } from "@/components/ui/label";
 import {
   getProviders,
   deleteProvider,
   getProviderTemplates,
-  getProviderModels
+  getProviderModels,
+  getProviderUsage
 } from "@/lib/api";
-import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
+import type { Provider, ProviderTemplate, ProviderModel, ProviderUsage, UsageWindow } from "@/lib/api";
 import { copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
-import { ExternalLink, Pencil, Trash2, Boxes } from "lucide-react";
+import { ExternalLink, Pencil, Trash2, Boxes, RefreshCw, TriangleAlert } from "lucide-react";
 import { ProviderFormDialog } from "@/routes/providers/provider-form-dialog";
 import { ProviderModelsDialog } from "@/routes/providers/provider-models-dialog";
 import { useProviderForm } from "@/routes/providers/use-provider-form";
 import { getConfigBaseUrl } from "@/routes/providers/provider-form-utils";
+
+// 用量百分比保留一位小数，去掉无意义的 .0
+const formatUsagePercent = (window: UsageWindow) => {
+  const percent = Math.round(window.percent * 10) / 10;
+  return `${percent}%`;
+};
 
 export default function ProvidersPage() {
   const { t } = useTranslation(['providers', 'common']);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerTemplates, setProviderTemplates] = useState<ProviderTemplate[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [modelsOpenId, setModelsOpenId] = useState<number | null>(null);
   const [providerModels, setProviderModels] = useState<ProviderModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [usageMap, setUsageMap] = useState<Record<number, ProviderUsage>>({});
+  const [usageLoading, setUsageLoading] = useState(false);
+  const usageRequestedRef = useRef<Set<number>>(new Set());
 
-  // 筛选条件。名称有 300ms 防抖：不防抖就是每敲一个字符发一次请求
+  // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
-  const [nameTerm, setNameTerm] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
 
@@ -75,40 +82,97 @@ export default function ProvidersPage() {
   });
 
   useEffect(() => {
+    fetchProviders();
     fetchProviderTemplates();
   }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setNameTerm(nameFilter.trim());
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [nameFilter]);
-
-  // 取数只挂在筛选条件上：初次挂载也走这里，不再另有一条会重复请求的初始化 effect
+  // 监听筛选条件变化
   useEffect(() => {
     fetchProviders();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nameTerm, typeFilter]);
+  }, [nameFilter, typeFilter]);
 
   const fetchProviders = async () => {
     try {
       setLoading(true);
-      setLoadError(null);
       // 处理筛选条件，"all"表示不过滤，空字符串表示不过滤
-      const name = nameTerm || undefined;
+      const name = nameFilter.trim() || undefined;
       const type = typeFilter === "all" ? undefined : typeFilter;
 
       const data = await getProviders({ name, type });
       setProviders(data);
+      // 首屏/新增的供应商补拉用量；已在 ref 中记录过的会被跳过，避免筛选时重复打上游
+      void fetchUsages(data);
     } catch (err) {
-      // 失败留在面板上：只弹一条会自己消失的提示，正文照旧显示"暂无提供商数据"，
-      // 等于把取数失败说成了确实没有
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(t('toast.fetch_failed', { message }));
       console.error(err);
-      setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+  };
+
+  // 并发拉取列表内每个供应商的用量；单个失败只影响该行，不拖垮整页。
+  // usageRequestedRef 记录已发起过请求的 provider，避免筛选框每敲一次键都重打上游
+  // （列表会被 name 筛选高频刷新，用量属于上游限额资源，只在首次与手动刷新时拉取）。
+  const fetchUsages = async (list: Provider[], force = false) => {
+    if (force) {
+      usageRequestedRef.current.clear();
+    }
+    const targets = list.filter((provider) => !usageRequestedRef.current.has(provider.ID));
+    if (targets.length === 0) {
+      return;
+    }
+    targets.forEach((provider) => usageRequestedRef.current.add(provider.ID));
+
+    setUsageLoading(true);
+    try {
+      const next: Record<number, ProviderUsage> = {};
+      await Promise.all(
+        targets.map(async (provider) => {
+          try {
+            next[provider.ID] = await getProviderUsage(provider.ID);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            next[provider.ID] = { supported: true, error: message };
+          }
+        })
+      );
+      setUsageMap((prev) => ({ ...prev, ...next }));
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const renderUsageCell = (usage: ProviderUsage | undefined, key: "rolling" | "weekly" | "monthly") => {
+    if (!usage) {
+      return <span className="text-muted-foreground">{usageLoading ? "…" : "-"}</span>;
+    }
+    if (!usage.supported) {
+      return (
+        <span className="text-muted-foreground" title={t('usage.unsupported')}>
+          -
+        </span>
+      );
+    }
+    if (usage.error) {
+      return (
+        <span className="inline-flex items-center text-destructive" title={usage.error}>
+          <TriangleAlert className="h-3.5 w-3.5" />
+        </span>
+      );
+    }
+    const window = usage[key];
+    if (!window) {
+      return <span className="text-muted-foreground">-</span>;
+    }
+    const title = window.resets_at
+      ? `${t('usage.resets_at')}: ${new Date(window.resets_at).toLocaleString()}`
+      : undefined;
+    return (
+      <span className={window.status === "exceeded" ? "font-medium text-destructive" : "font-medium"} title={title}>
+        {formatUsagePercent(window)}
+      </span>
+    );
   };
 
   const fetchProviderTemplates = async () => {
@@ -175,8 +239,21 @@ export default function ProvidersPage() {
   return (
     <div className="h-full min-h-0 flex flex-col gap-2 p-1">
       <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="mr-auto text-xl font-semibold tracking-tight">{t('title')}</h2>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-2xl font-bold tracking-tight">{t('title')}</h2>
+          </div>
+          <div className="flex w-full sm:w-auto items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => fetchUsages(providers, true)}
+              disabled={usageLoading || providers.length === 0}
+              className="h-8 gap-1.5 text-xs"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${usageLoading ? "animate-spin" : ""}`} />
+              {t('actions.refresh')}
+            </Button>
+          </div>
         </div>
       </div>
       <div className="flex flex-col gap-2 flex-shrink-0">
@@ -217,31 +294,20 @@ export default function ProvidersPage() {
           </div>
         </div>
       </div>
-      {loadError ? (
-        <ErrorState
-          title={t('load_failed')}
-          message={loadError}
-          retryLabel={t('retry')}
-          onRetry={() => void fetchProviders()}
-        />
-      ) : (
-        <Panel
-          title={t('list_title')}
-          note={hasFilter ? t("count_filtered", { total: providers.length }) : t("count", { total: providers.length })}
-          className="flex min-h-0 flex-1 flex-col"
-          bodyClassName="flex min-h-0 flex-1 flex-col p-0"
-        >
-          {loading ? (
-            <ListSkeleton label={t('loading')} />
-          ) : providers.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-muted-foreground text-sm text-center px-6">
-              {hasFilter ? t('no_match') : t('no_data')}
-            </div>
-          ) : (
-            <div className="h-full flex flex-col">
+      <div className="flex-1 min-h-0 border rounded-md bg-background shadow-sm">
+        {loading ? (
+          <div className="flex h-full items-center justify-center">
+            <Loading message={t('loading')} />
+          </div>
+        ) : providers.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-muted-foreground text-sm text-center px-6">
+            {hasFilter ? t('no_match') : t('no_data')}
+          </div>
+        ) : (
+          <div className="h-full flex flex-col">
             <div className="hidden sm:block flex-1 overflow-y-auto">
               <div className="w-full">
-                <Table className="min-w-[1200px]">
+                <Table className="min-w-[1500px]">
                   <TableHeader className="z-10 sticky top-0 bg-secondary/80 text-secondary-foreground">
                     <TableRow>
                       <TableHead>{t('table.id')}</TableHead>
@@ -249,6 +315,9 @@ export default function ProvidersPage() {
                       <TableHead>{t('table.type')}</TableHead>
                       <TableHead>{t('table.config')}</TableHead>
                       <TableHead>{t('table.console')}</TableHead>
+                      <TableHead>{t('table.rolling')}</TableHead>
+                      <TableHead>{t('table.weekly')}</TableHead>
+                      <TableHead>{t('table.monthly')}</TableHead>
                       <TableHead>{t('table.actions')}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -269,14 +338,17 @@ export default function ProvidersPage() {
                               size="icon"
                               onClick={() => window.open(provider.Console, '_blank')}
                             >
-                              <ExternalLink className="size-4" />
+                              <ExternalLink className="h-2 w-2" />
                             </Button>
                           ) : (
                             <Button variant="ghost" size="icon" disabled>
-                              <ExternalLink className="size-4 opacity-50" />
+                              <ExternalLink className="h-2 w-2 opacity-50" />
                             </Button>
                           )}
                         </TableCell>
+                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "rolling")}</TableCell>
+                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "weekly")}</TableCell>
+                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "monthly")}</TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
                             <Button variant="outline" size="icon" onClick={() => openEditDialog(provider)}>
@@ -326,11 +398,11 @@ export default function ProvidersPage() {
                             className="h-5 w-5"
                             onClick={() => window.open(provider.Console, '_blank')}
                           >
-                            <ExternalLink className="size-3.5" />
+                            <ExternalLink className="h-2.5 w-2.5" />
                           </Button>
                         ) : (
                           <Button variant="ghost" size="icon" disabled className="h-5 w-5">
-                            <ExternalLink className="size-3.5 opacity-50" />
+                            <ExternalLink className="h-2.5 w-2.5 opacity-50" />
                           </Button>
                         )}
                       </div>
@@ -367,13 +439,26 @@ export default function ProvidersPage() {
                       </AlertDialog>
                     </div>
                   </div>
+                  <div className="grid grid-cols-3 gap-2 border-t pt-2">
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.rolling')}</p>
+                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "rolling")}</p>
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.weekly')}</p>
+                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "weekly")}</p>
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.monthly')}</p>
+                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "monthly")}</p>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         )}
-        </Panel>
-      )}
+      </div>
 
       <ProviderFormDialog
         open={open}

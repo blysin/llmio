@@ -15,7 +15,10 @@ import (
 
 func OpenAIModelsHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	models, err := service.ModelsByTypes(ctx, service.ServableTypes(consts.StyleOpenAI)...)
+	models, err := service.ModelsByTypes(ctx,
+		consts.StyleOpenAI, consts.StyleOpenAIRes,
+		consts.StyleOpenCode, consts.StyleCommandCode,
+	)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
@@ -42,7 +45,7 @@ func OpenAIModelsHandler(c *gin.Context) {
 
 func AnthropicModelsHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	models, err := service.ModelsByTypes(ctx, service.ServableTypes(consts.StyleAnthropic)...)
+	models, err := service.ModelsByTypes(ctx, consts.StyleAnthropic)
 	if err != nil {
 		common.InternalServerError(c, err.Error())
 		return
