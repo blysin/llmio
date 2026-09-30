@@ -127,6 +127,7 @@ func main() {
 		// 系统概览 metrics (feat/token-usage-trend): 缓存 Token 统计、Tokens 用量趋势、按调用/Tokens 口径排行
 		api.GET("/metrics/use/:days", handler.Metrics)
 		api.GET("/metrics/timeline", handler.Timeline)
+		api.GET("/metrics/models", handler.TimelineModels)
 		api.GET("/metrics/counts", handler.Counts)
 		api.GET("/metrics/projects", handler.ProjectCounts)
 		// Provider management
