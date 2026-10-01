@@ -76,3 +76,52 @@ func TestInit_BackfillsAuthKeyIOLogToFalse(t *testing.T) {
 		t.Fatal("expected io_log default to false")
 	}
 }
+
+// chat_logs.backup 是后加的非指针 bool：老库经 AutoMigrate 加列后存量行为 NULL，
+// 不归一的话日志列表扫描 bool 会直接报错。这条测试去掉 init.go 里的回填就会红。
+func TestInit_BackfillsChatLogBackupToFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "llmio.db")
+
+	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open seed database: %v", err)
+	}
+	closeOnCleanup(t, db)
+
+	// 老 chat_logs 表：没有 backup 列
+	if err := db.Exec(`
+		CREATE TABLE chat_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			name TEXT,
+			trace_id TEXT,
+			provider_model TEXT,
+			provider_name TEXT,
+			status TEXT,
+			style TEXT,
+			chat_io NUMERIC,
+			auth_key_id INTEGER
+		)
+	`).Error; err != nil {
+		t.Fatalf("failed to create legacy chat_logs table: %v", err)
+	}
+
+	if err := db.Exec(`INSERT INTO chat_logs (name, provider_name, status, auth_key_id) VALUES (?, ?, ?, ?)`,
+		"legacy-model", "legacy-provider", "success", 0,
+	).Error; err != nil {
+		t.Fatalf("failed to seed legacy chat log: %v", err)
+	}
+
+	Init(context.Background(), path)
+	closeOnCleanup(t, DB)
+
+	chatLog, err := gorm.G[ChatLog](DB).Where("name = ?", "legacy-model").First(context.Background())
+	if err != nil {
+		t.Fatalf("failed to load migrated chat log（backup 为 NULL 时这里会因 bool 扫描失败而报错）: %v", err)
+	}
+	if chatLog.Backup {
+		t.Fatal("expected backup default to false")
+	}
+}

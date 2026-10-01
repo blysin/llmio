@@ -5,15 +5,58 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/atopos31/llmio/models"
 	"github.com/atopos31/llmio/providers"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 )
+
+// 备用关联必须单独成池：主池只收 backup=false 的关联；
+// 未命中 providerMap 的关联（供应商协议与入站格式不匹配）两池都不进。
+func TestSplitWeightItems(t *testing.T) {
+	providerMap := map[uint]models.Provider{1: {}, 2: {}}
+	items := []models.ModelWithProvider{
+		{Model: gorm.Model{ID: 101}, ProviderID: 1, Weight: 5},
+		{Model: gorm.Model{ID: 102}, ProviderID: 2, Weight: 7, Backup: new(true)},
+		{Model: gorm.Model{ID: 103}, ProviderID: 1, Weight: 3, Backup: new(false)},
+		{Model: gorm.Model{ID: 104}, ProviderID: 99, Weight: 9, Backup: new(true)},
+	}
+
+	primary, backup := splitWeightItems(items, providerMap)
+
+	if want := map[uint]int{101: 5, 103: 3}; !maps.Equal(primary, want) {
+		t.Errorf("primary = %v, want %v", primary, want)
+	}
+	if want := map[uint]int{102: 7}; !maps.Equal(backup, want) {
+		t.Errorf("backup = %v, want %v", backup, want)
+	}
+}
+
+// 全部关联都标成备用时主池为空、备用池非空。
+// 这条路径必须成立：降级逻辑靠 hasBackup + 主池 Pop 失败判断，
+// 一旦备用池也被清掉就会退化成「没有配置关联模型」的误报。
+func TestSplitWeightItemsAllBackup(t *testing.T) {
+	providerMap := map[uint]models.Provider{1: {}}
+	items := []models.ModelWithProvider{
+		{Model: gorm.Model{ID: 201}, ProviderID: 1, Weight: 1, Backup: new(true)},
+	}
+
+	primary, backup := splitWeightItems(items, providerMap)
+
+	if len(primary) != 0 {
+		t.Errorf("primary = %v, want empty", primary)
+	}
+	if want := map[uint]int{201: 1}; !maps.Equal(backup, want) {
+		t.Errorf("backup = %v, want %v", backup, want)
+	}
+}
 
 func TestBuildUpstreamBodyDeletesSessionID(t *testing.T) {
 	raw := []byte(`{"model":"local-model","session_id":"owu-session","messages":[{"role":"user","content":"hi"}]}`)
