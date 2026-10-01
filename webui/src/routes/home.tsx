@@ -11,10 +11,11 @@ import {
   getMetrics,
   getModelCounts,
   getProjectCounts,
+  getProviderModelUsage,
   getTimeline,
   getTimelineModels
 } from "@/lib/api";
-import type { MetricsData, ModelCount, ProjectCount, StatMetric, TimelinePoint, TimelineRange } from "@/lib/api";
+import type { MetricsData, ModelCount, ProjectCount, ProviderModelUsage, StatMetric, TimelinePoint, TimelineRange } from "@/lib/api";
 import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
 
@@ -24,6 +25,7 @@ const ModelRankingChart = lazy(() => import("@/components/charts/bar-chart").the
 const ProjectChartPieDonutText = lazy(() => import("@/components/charts/project-pie-chart").then(module => ({ default: module.ProjectChartPieDonutText })));
 const ProjectRankingChart = lazy(() => import("@/components/charts/project-bar-chart").then(module => ({ default: module.ProjectRankingChart })));
 const TokenTrendChart = lazy(() => import("@/components/charts/token-trend-chart").then(module => ({ default: module.TokenTrendChart })));
+const ProviderModelBarChart = lazy(() => import("@/components/charts/provider-model-bar-chart").then(module => ({ default: module.ProviderModelBarChart })));
 
 const emptyMetrics = (): MetricsData => ({ reqs: 0, tokens: 0, prompt_tokens: 0, cached_tokens: 0 });
 
@@ -143,6 +145,7 @@ export default function Home() {
   const [projectCounts, setProjectCounts] = useState<ProjectCount[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [timelineModels, setTimelineModels] = useState<string[]>([]);
+  const [providerModelUsage, setProviderModelUsage] = useState<ProviderModelUsage[]>([]);
 
   const { t } = useTranslation('home');
 
@@ -212,6 +215,17 @@ export default function Home() {
     }
   }, [t]);
 
+  const fetchProviderModelUsage = useCallback(async (timelineRange: TimelineRange) => {
+    try {
+      const data = await getProviderModelUsage(timelineRange);
+      setProviderModelUsage(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(t('errors.provider_model_usage', { message }));
+      console.error(err);
+    }
+  }, [t]);
+
   // 概要指标（今日/本月）与统计口径无关
   const loadSummary = useCallback(
     () => Promise.all([fetchTodayMetrics(), fetchTotalMetrics()]),
@@ -231,12 +245,19 @@ export default function Home() {
     [fetchTimeline]
   );
 
+  // 供应商/模型 Tokens 用量只随时间维度变化，与统计口径（count/tokens）无关
+  const loadProviderModelUsage = useCallback(
+    (timelineRange: TimelineRange) => fetchProviderModelUsage(timelineRange),
+    [fetchProviderModelUsage]
+  );
+
   // 首次加载，后续由刷新按钮、统计口径、时间维度与模型筛选切换触发
   useEffect(() => {
     void (async () => {
       await Promise.all([
         loadSummary(),
         loadStats(DEFAULT_METRIC, DEFAULT_RANGE),
+        loadProviderModelUsage(DEFAULT_RANGE),
         loadTimeline(DEFAULT_RANGE, DEFAULT_MODEL),
         fetchTimelineModels(),
       ]);
@@ -250,11 +271,12 @@ export default function Home() {
     await Promise.all([
       loadSummary(),
       loadStats(metric, range),
+      loadProviderModelUsage(range),
       loadTimeline(range, model),
       fetchTimelineModels(),
     ]);
     setLoading(false);
-  }, [loadSummary, loadStats, loadTimeline, fetchTimelineModels, metric, range, model]);
+  }, [loadSummary, loadStats, loadProviderModelUsage, loadTimeline, fetchTimelineModels, metric, range, model]);
 
   const handleMetricChange = useCallback((next: StatMetric) => {
     if (next === metric) return;
@@ -262,12 +284,12 @@ export default function Home() {
     void loadStats(next, range);
   }, [metric, range, loadStats]);
 
-  // 时间维度联动：趋势折线图与模型/项目图表同步刷新同一 range
+  // 时间维度联动：趋势折线图、模型/项目图表与供应商/模型用量同步刷新同一 range
   const handleRangeChange = useCallback((next: TimelineRange) => {
     if (next === range) return;
     setRange(next);
-    void Promise.all([loadTimeline(next, model), loadStats(metric, next)]);
-  }, [range, model, metric, loadStats, loadTimeline]);
+    void Promise.all([loadTimeline(next, model), loadStats(metric, next), loadProviderModelUsage(next)]);
+  }, [range, model, metric, loadStats, loadTimeline, loadProviderModelUsage]);
 
   // 模型筛选只影响趋势折线图，不改变占比/排行图表的统计口径
   const handleModelChange = useCallback((next: string) => {
@@ -373,6 +395,12 @@ export default function Home() {
                 <ProjectRankingChart data={projectCounts} metric={metric} />
               </Suspense>
             </div>
+
+            <Suspense fallback={<div className="h-80 flex items-center justify-center">
+              <Loading message={t('loading_chart')} />
+            </div>}>
+              <ProviderModelBarChart data={providerModelUsage} />
+            </Suspense>
           </div>
         )}
       </div>

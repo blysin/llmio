@@ -44,12 +44,20 @@
     "series_cached": "快取 Tokens",
     "empty": "此時間範圍內暫無資料"
   },
+  "provider_model": {
+    "title": "供應商 / 模型 Tokens 用量",
+    "series_total": "總 Tokens",
+    "series_cached": "快取 Tokens",
+    "others": "其他",
+    "empty": "此時間範圍內暫無資料"
+  },
   "errors": {
     "today_metrics": "取得今日指標失敗: {{message}}",
     "total_metrics": "取得總計指標失敗: {{message}}",
     "model_counts": "取得模型呼叫統計失敗: {{message}}",
     "project_counts": "取得專案呼叫統計失敗: {{message}}",
     "timeline": "取得 Tokens 用量趨勢失敗: {{message}}",
-    "timeline_models": "取得模型列表失敗: {{message}}"
+    "timeline_models": "取得模型列表失敗: {{message}}",
+    "provider_model_usage": "取得供應商/模型用量失敗: {{message}}"
   }
 }

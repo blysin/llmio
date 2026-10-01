@@ -44,12 +44,20 @@
     "series_cached": "Cached Tokens",
     "empty": "No data in this time range"
   },
+  "provider_model": {
+    "title": "Provider / Model Token Usage",
+    "series_total": "Total Tokens",
+    "series_cached": "Cached Tokens",
+    "others": "Others",
+    "empty": "No data in this time range"
+  },
   "errors": {
     "today_metrics": "Failed to fetch today's metrics: {{message}}",
     "total_metrics": "Failed to fetch total metrics: {{message}}",
     "model_counts": "Failed to fetch model usage stats: {{message}}",
     "project_counts": "Failed to fetch project usage stats: {{message}}",
     "timeline": "Failed to fetch token usage trend: {{message}}",
-    "timeline_models": "Failed to fetch model list: {{message}}"
+    "timeline_models": "Failed to fetch model list: {{message}}",
+    "provider_model_usage": "Failed to fetch provider/model usage: {{message}}"
   }
 }

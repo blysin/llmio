@@ -41,6 +41,7 @@ export interface ModelWithProvider {
   StructuredOutput: boolean;
   Image: boolean;
   WithHeader: boolean;
+  Backup?: boolean | null;
   CustomerHeaders: Record<string, string> | null;
   ExtraBody: Record<string, unknown> | null;
   Status: boolean | null;
@@ -341,6 +342,7 @@ export async function createModelProvider(association: {
   structured_output: boolean;
   image: boolean;
   with_header: boolean;
+  backup: boolean;
   customer_headers: Record<string, string>;
   extra_body: Record<string, unknown>;
   weight: number;
@@ -363,6 +365,7 @@ export async function updateModelProvider(id: number, association: {
   structured_output?: boolean;
   image?: boolean;
   with_header?: boolean;
+  backup?: boolean;
   customer_headers?: Record<string, string>;
   extra_body?: Record<string, unknown>;
   weight?: number;
@@ -438,6 +441,23 @@ export async function getProjectCounts(metric: StatMetric = "count", range?: Tim
   const params = new URLSearchParams({ by: metric });
   if (range) params.set("range", range);
   return apiRequest<ProjectCount[]>(`/metrics/projects?${params.toString()}`);
+}
+
+// 按「实际供应商 + 实际上游模型」聚合的 Tokens 用量（与按请求模型名分组的 ModelCount 互补）
+export interface ProviderModelUsage {
+  provider: string;        // 实际供应商名
+  provider_model: string;  // 实际上游模型名
+  tokens: number;          // 总 tokens
+  cached_tokens: number;   // 缓存 tokens
+  others?: boolean;        // 超出 Top N 合并而成的汇总条目
+}
+
+// range 缺省时不限时间（全量口径）；传入时按对应时间窗口过滤
+export async function getProviderModelUsage(range?: TimelineRange): Promise<ProviderModelUsage[]> {
+  const params = new URLSearchParams();
+  if (range) params.set("range", range);
+  const query = params.toString();
+  return apiRequest<ProviderModelUsage[]>(`/metrics/provider-models${query ? `?${query}` : ""}`);
 }
 
 export interface TimelinePoint {
@@ -542,6 +562,7 @@ export interface ChatLog {
   SessionID?: string;
   ProviderModel: string;
   ProviderName: string;
+  Backup: boolean;
   Status: string;
   Style: string;
   UserAgent: string;
