@@ -44,12 +44,20 @@
     "series_cached": "缓存 Tokens",
     "empty": "该时间范围内暂无数据"
   },
+  "provider_model": {
+    "title": "供应商 / 模型 Tokens 用量",
+    "series_total": "总 Tokens",
+    "series_cached": "缓存 Tokens",
+    "others": "其他",
+    "empty": "该时间范围内暂无数据"
+  },
   "errors": {
     "today_metrics": "获取今日指标失败: {{message}}",
     "total_metrics": "获取总计指标失败: {{message}}",
     "model_counts": "获取模型调用统计失败: {{message}}",
     "project_counts": "获取项目调用统计失败: {{message}}",
     "timeline": "获取 Tokens 用量趋势失败: {{message}}",
-    "timeline_models": "获取模型列表失败: {{message}}"
+    "timeline_models": "获取模型列表失败: {{message}}",
+    "provider_model_usage": "获取供应商/模型用量失败: {{message}}"
   }
 }

@@ -96,6 +96,7 @@ func main() {
 		api.GET("/metrics/models", handler.TimelineModels)
 		api.GET("/metrics/counts", handler.Counts)
 		api.GET("/metrics/projects", handler.ProjectCounts)
+		api.GET("/metrics/provider-models", handler.ProviderModelUsage)
 		// Provider management
 		api.GET("/providers/template", handler.GetProviderTemplates)
 		api.GET("/providers", handler.GetProviders)

@@ -399,3 +399,80 @@ func ProjectCounts(c *gin.Context) {
 
 	common.Success(c, results)
 }
+
+type ProviderModelCount struct {
+	Provider      string `json:"provider"`       // 实际供应商名
+	ProviderModel string `json:"provider_model"` // 实际上游模型名
+	Tokens        int64  `json:"tokens"`         // 总 tokens
+	CachedTokens  int64  `json:"cached_tokens"`  // 缓存 tokens
+	Others        bool   `json:"others,omitempty"`
+}
+
+// ProviderModelUsage 按「实际供应商 + 实际上游模型」聚合 total_tokens 与 cached_tokens。
+// 与 Counts（按用户请求的模型别名 name 分组）互补：那张图看的是调用方要的模型，
+// 这张图看的是真正被路由到的上游，备用关联接管时会体现在这里。
+// 只统计有实际用量的组合（SUM(total_tokens) > 0）；按总 tokens 降序，超出 topN 的合并为一条 others。
+func ProviderModelUsage(c *gin.Context) {
+	start, end, limited, rangeValid := rangeWindow(c, time.Now())
+	if !rangeValid {
+		common.BadRequest(c, "Invalid range parameter: must be one of today, 24h, 7d, 30d, 90d")
+		return
+	}
+
+	type providerModelRow struct {
+		Provider      string `gorm:"column:provider"`
+		ProviderModel string `gorm:"column:provider_model"`
+		Tokens        int64  `gorm:"column:tokens"`
+		CachedTokens  int64  `gorm:"column:cached_tokens"`
+	}
+
+	chain := models.DB.
+		Model(&models.ChatLog{}).
+		Select("provider_name as provider, provider_model, COALESCE(SUM(total_tokens), 0) as tokens, " + cachedTokensSumExpr).
+		Group("provider_name, provider_model").
+		Having("SUM(total_tokens) > 0").
+		Order("tokens DESC")
+	if limited {
+		chain = chain.Where("created_at >= ? AND created_at < ?", start, end)
+	}
+
+	rows := make([]providerModelRow, 0)
+	if err := chain.Scan(&rows).Error; err != nil {
+		common.InternalServerError(c, "Failed to aggregate provider model usage: "+err.Error())
+		return
+	}
+
+	results := make([]ProviderModelCount, 0, len(rows))
+	for _, row := range rows {
+		provider := strings.TrimSpace(row.Provider)
+		if provider == "" {
+			provider = "-"
+		}
+		providerModel := strings.TrimSpace(row.ProviderModel)
+		if providerModel == "" {
+			providerModel = "-"
+		}
+		results = append(results, ProviderModelCount{
+			Provider:      provider,
+			ProviderModel: providerModel,
+			Tokens:        row.Tokens,
+			CachedTokens:  row.CachedTokens,
+		})
+	}
+
+	const topN = 10
+	if len(results) > topN {
+		var othersTokens, othersCached int64
+		for _, item := range results[topN:] {
+			othersTokens += item.Tokens
+			othersCached += item.CachedTokens
+		}
+		results = append(results[:topN], ProviderModelCount{
+			Tokens:       othersTokens,
+			CachedTokens: othersCached,
+			Others:       true,
+		})
+	}
+
+	common.Success(c, results)
+}
