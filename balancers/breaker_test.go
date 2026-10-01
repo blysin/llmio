@@ -8,6 +8,7 @@ import (
 type spyBalancer struct {
 	nextKey   uint
 	popErr    error
+	empty     bool
 	deletes   []uint
 	reduces   []uint
 	successes []uint
@@ -19,6 +20,8 @@ func (s *spyBalancer) Pop() (uint, error) {
 	}
 	return s.nextKey, nil
 }
+
+func (s *spyBalancer) Empty() bool { return s.empty }
 
 func (s *spyBalancer) Delete(key uint) { s.deletes = append(s.deletes, key) }
 func (s *spyBalancer) Reduce(key uint) { s.reduces = append(s.reduces, key) }

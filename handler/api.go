@@ -60,6 +60,7 @@ type ModelWithProviderRequest struct {
 	StructuredOutput bool              `json:"structured_output"`
 	Image            bool              `json:"image"`
 	WithHeader       bool              `json:"with_header"`
+	Backup           bool              `json:"backup"`
 	CustomerHeaders  map[string]string `json:"customer_headers"`
 	ExtraBody        map[string]any    `json:"extra_body"`
 	Weight           int               `json:"weight"`
@@ -645,6 +646,7 @@ func CreateModelProvider(c *gin.Context) {
 		StructuredOutput: &req.StructuredOutput,
 		Image:            &req.Image,
 		WithHeader:       &req.WithHeader,
+		Backup:           &req.Backup,
 		CustomerHeaders:  customerHeaders,
 		ExtraBody:        extraBody,
 		Weight:           req.Weight,
@@ -711,6 +713,7 @@ func UpdateModelProvider(c *gin.Context) {
 		StructuredOutput: &req.StructuredOutput,
 		Image:            &req.Image,
 		WithHeader:       &req.WithHeader,
+		Backup:           &req.Backup,
 		CustomerHeaders:  customerHeaders,
 		ExtraBody:        extraBody,
 		Weight:           req.Weight,

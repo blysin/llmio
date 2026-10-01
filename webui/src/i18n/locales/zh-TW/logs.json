@@ -48,6 +48,7 @@
     "provider_model": "供應商模型",
     "type": "類型",
     "provider": "供應商",
+    "role": "角色",
     "actions": "操作"
   },
   "mobile": {
@@ -59,6 +60,10 @@
     "provider": "供應商",
     "type": "類型"
   },
+  "role": {
+    "primary": "主關聯",
+    "backup": "備用關聯"
+  },
   "detail": {
     "title": "日誌詳情: {{id}}",
     "created_at": "建立時間：",
@@ -69,6 +74,7 @@
     "basic_info": "基本資訊",
     "model_name": "模型名稱",
     "provider": "供應商",
+    "provider_role": "上游角色",
     "provider_model": "供應商模型",
     "type": "類型",
     "size": "回應大小",

@@ -33,19 +33,36 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 	go RecordRetryLog(context.Background(), retryLog)
 
 	// 选择负载均衡策略
-	var balancer balancers.Balancer
-	switch providersWithMeta.Strategy {
-	case consts.BalancerLottery:
-		balancer = balancers.NewLottery(providersWithMeta.WeightItems)
-	case consts.BalancerRotor:
-		balancer = balancers.NewRotor(providersWithMeta.WeightItems)
-	default:
-		balancer = balancers.NewLottery(providersWithMeta.WeightItems)
+	// 主池与备用池各自独立构建：备用关联不参与日常轮询，
+	// 只有主池在本请求内被清空（所有主关联都失败出局）后才会接管，且只降不升。
+	newBalancer := func(items map[uint]int) balancers.Balancer {
+		var b balancers.Balancer
+		switch providersWithMeta.Strategy {
+		case consts.BalancerRotor:
+			b = balancers.NewRotor(items)
+		default:
+			b = balancers.NewLottery(items)
+		}
+		// 是否开启熔断
+		if providersWithMeta.Breaker {
+			b = balancers.BalancerWrapperBreaker(b)
+		}
+		return b
 	}
 
-	// 是否开启熔断
-	if providersWithMeta.Breaker {
-		balancer = balancers.BalancerWrapperBreaker(balancer)
+	// balancer 在本请求内可变：主池耗尽后指向备用池
+	balancer := newBalancer(providersWithMeta.WeightItems)
+	backupBalancer := newBalancer(providersWithMeta.BackupWeightItems)
+	hasBackup := len(providersWithMeta.BackupWeightItems) > 0
+	usingBackup := false
+
+	// 降级状态提示：终态错误与候选池中途清空都要带上它，
+	// 便于区分「主关联本身就不够用」和「连备用也挂了」
+	backupHint := func() string {
+		if usingBackup {
+			return " (backup providers exhausted)"
+		}
+		return ""
 	}
 
 	// 设置请求超时
@@ -69,6 +86,10 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 	timer := time.NewTimer(time.Second * time.Duration(providersWithMeta.TimeOut))
 	defer timer.Stop()
+
+	// 记录每一轮的真实失败原因：轮次耗尽或候选池提前清空时用它兜底，
+	// 否则「provider 配置损坏」这类具体原因会被劣化成笼统的 All retry failed
+	var lastErr error
 	for retry := range providersWithMeta.MaxRetry {
 		select {
 		case <-ctx.Done():
@@ -76,10 +97,24 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		case <-timer.C:
 			return nil, nil, errors.New("retry time out")
 		default:
+			// 主池已无可用候选（所有主关联在本请求内都失败出局）→ 降级到备用池。
+			// 429 只降权不移出，仍留在主池里继续消耗重试轮次，因此不算「不可用」。
+			// 降级只降不升：备用接管后即使主池重新有货也不回退（本请求内主池只会越来越空）。
+			if hasBackup && !usingBackup && balancer.Empty() {
+				balancer = backupBalancer
+				usingBackup = true
+				slog.Warn("all primary providers exhausted, falling back to backup providers",
+					"model", before.Model, "retry", retry, "traceID", traceID)
+			}
+
 			// 加权负载均衡
 			id, err := balancer.Pop()
 			if err != nil {
-				return nil, nil, fmt.Errorf("balancer pop err: %v, traceID: %s", err, traceID)
+				// 池子提前清空时把上一轮的真实原因一并带出，避免被误读成「没有配置关联模型」
+				if lastErr != nil {
+					return nil, nil, fmt.Errorf("balancer pop err: %v, last error: %w, traceID: %s%s", err, lastErr, traceID, backupHint())
+				}
+				return nil, nil, fmt.Errorf("balancer pop err: %v, traceID: %s%s", err, traceID, backupHint())
 			}
 
 			modelWithProvider, ok := providersWithMeta.ModelWithProviderMap[id]
@@ -91,20 +126,14 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 			provider := providerMap[modelWithProvider.ProviderID]
 
-			chatModel, err := providers.New(provider.Type, provider.Config, provider.Proxy)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			client := providers.GetClient(responseHeaderTimeout, provider.Proxy)
-
-			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
-
+			// 日志构造提前到 provider 构建之前：provider 构建失败同样要留痕，
+			// 否则这一轮既没有重试日志也没有错误记录，问题无从追查
 			log := models.ChatLog{
 				Name:           before.Model,
 				TraceID:        traceID,
 				ProviderModel:  modelWithProvider.ProviderModel,
 				ProviderName:   provider.Name,
+				Backup:         usingBackup,
 				Status:         consts.StatusRunning,
 				Style:          style,
 				UserAgent:      reqMeta.UserAgent,
@@ -119,6 +148,21 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				OutputPrice:    lo.FromPtrOr(modelWithProvider.OutputPrice, 0),
 				Currency:       modelWithProvider.Currency,
 			}
+
+			chatModel, err := providers.New(provider.Type, provider.Config, provider.Proxy)
+			if err != nil {
+				// provider 配置损坏（非法 JSON、type 与上游协议不匹配等）不应硬失败整条请求：
+				// 记下本轮原因、把该候选清出候选池，让其它关联模型接手
+				retryLog <- log.WithError(err)
+				lastErr = err
+				balancer.Delete(id)
+				continue
+			}
+
+			client := providers.GetClient(responseHeaderTimeout, provider.Proxy)
+
+			slog.Info("using provider", "provider", provider.Name, "model", modelWithProvider.ProviderModel)
+
 			// 根据请求原始请求头 是否透传请求头 自定义请求头 构建新的请求头
 			withHeader := lo.FromPtrOr(modelWithProvider.WithHeader, false)
 			headers := BuildHeaders(reqMeta.Header, withHeader, modelWithProvider.CustomerHeaders, before.Stream, HeaderVars{
@@ -133,6 +177,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			rawBody, err := buildUpstreamBody(before.raw, modelWithProvider.ExtraBody)
 			if err != nil {
 				retryLog <- log.WithError(err)
+				lastErr = err
 				balancer.Delete(id)
 				continue
 			}
@@ -140,6 +185,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			req, err := chatModel.BuildReq(ctx, headers, modelWithProvider.ProviderModel, rawBody)
 			if err != nil {
 				retryLog <- log.WithError(err)
+				lastErr = err
 				// 构建请求失败 移除待选
 				balancer.Delete(id)
 				continue
@@ -148,6 +194,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			res, err := client.Do(req)
 			if err != nil {
 				retryLog <- log.WithError(err)
+				lastErr = err
 				// 请求失败 移除待选
 				balancer.Delete(id)
 				continue
@@ -158,7 +205,9 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				if err != nil {
 					slog.Error("read body error", "error", err)
 				}
-				retryLog <- log.WithError(fmt.Errorf("status: %d, body: %s", res.StatusCode, string(byteBody)))
+				statusErr := fmt.Errorf("status: %d, body: %s", res.StatusCode, string(byteBody))
+				retryLog <- log.WithError(statusErr)
+				lastErr = statusErr
 
 				if res.StatusCode == http.StatusTooManyRequests {
 					// 达到RPM限制 降低权重
@@ -177,14 +226,18 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				if !strings.Contains(contentType, "text/event-stream") {
 					byteBody, err := io.ReadAll(res.Body)
 					if err != nil {
-						retryLog <- log.WithError(fmt.Errorf("read body failed: %w", err))
+						readErr := fmt.Errorf("read body failed: %w", err)
+						retryLog <- log.WithError(readErr)
+						lastErr = readErr
 						balancer.Delete(id)
 						res.Body.Close()
 						continue
 					}
 
 					if matched, sample := matchProviderBodyError(string(byteBody), provider.ErrorMatcher); matched {
-						retryLog <- log.WithError(fmt.Errorf("response matched provider error sample %q, body: %s", sample, string(byteBody)))
+						matchErr := fmt.Errorf("response matched provider error sample %q, body: %s", sample, string(byteBody))
+						retryLog <- log.WithError(matchErr)
+						lastErr = matchErr
 						balancer.Delete(id)
 						res.Body.Close()
 						continue
@@ -200,7 +253,10 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		}
 	}
 
-	return nil, nil, fmt.Errorf("All retry failed, trace ID: %s", traceID)
+	if lastErr != nil {
+		return nil, nil, fmt.Errorf("All retry failed: %w, trace ID: %s%s", lastErr, traceID, backupHint())
+	}
+	return nil, nil, fmt.Errorf("All retry failed, trace ID: %s%s", traceID, backupHint())
 }
 
 func buildUpstreamBody(raw []byte, extraBody map[string]any) ([]byte, error) {
@@ -246,6 +302,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 			return err
 		}
 		log.Status = consts.StatusSuccess
+		// processer 返回的是只含耗时/用量/大小的空壳 log：ProviderName / Style / TraceID 等
+		// 能保留下来，靠的就是 GORM struct Updates 跳过零值字段。Backup 同理（随 insert 落库），
+		// 若这里改成 Save / Select("*") 会把备用标记擦成 false。
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
 			return err
 		}
@@ -309,11 +368,31 @@ func BuildHeaders(source http.Header, withHeader bool, customHeaders map[string]
 type ProvidersWithMeta struct {
 	ModelWithProviderMap map[uint]models.ModelWithProvider
 	WeightItems          map[uint]int
+	BackupWeightItems    map[uint]int
 	ProviderMap          map[uint]models.Provider
 	MaxRetry             int
 	TimeOut              int
 	Strategy             string
 	Breaker              bool
+}
+
+// splitWeightItems 把过滤后的关联按主/备用拆成两个独立权重池。
+// 备用关联不参与日常轮询，只有主池在本请求内被清空后才会被启用；
+// 未命中 providerMap 的关联（供应商协议与入站格式不匹配）两池都不进。
+func splitWeightItems(modelWithProviders []models.ModelWithProvider, providerMap map[uint]models.Provider) (map[uint]int, map[uint]int) {
+	weightItems := make(map[uint]int)
+	backupWeightItems := make(map[uint]int)
+	for _, mp := range modelWithProviders {
+		if _, ok := providerMap[mp.ProviderID]; !ok {
+			continue
+		}
+		if lo.FromPtrOr(mp.Backup, false) {
+			backupWeightItems[mp.ID] = mp.Weight
+			continue
+		}
+		weightItems[mp.ID] = mp.Weight
+	}
+	return weightItems, backupWeightItems
 }
 
 func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Before) (*ProvidersWithMeta, error) {
@@ -369,17 +448,12 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Bef
 
 	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 
-	weightItems := make(map[uint]int)
-	for _, mp := range modelWithProviders {
-		if _, ok := providerMap[mp.ProviderID]; !ok {
-			continue
-		}
-		weightItems[mp.ID] = mp.Weight
-	}
+	weightItems, backupWeightItems := splitWeightItems(modelWithProviders, providerMap)
 
 	return &ProvidersWithMeta{
 		ModelWithProviderMap: modelWithProviderMap,
 		WeightItems:          weightItems,
+		BackupWeightItems:    backupWeightItems,
 		ProviderMap:          providerMap,
 		MaxRetry:             model.MaxRetry,
 		TimeOut:              model.TimeOut,

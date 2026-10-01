@@ -46,6 +46,7 @@ type ModelWithProvider struct {
 	Image            *bool             // 能否接受带有图片的请求(视觉)
 	WithHeader       *bool             // 是否透传header
 	Status           *bool             // 是否启用
+	Backup           *bool             // 是否为备用关联：不参与日常轮询，仅当主关联在本请求内全部不可用时接管
 	CustomerHeaders  map[string]string `gorm:"serializer:json"` // 自定义headers
 	ExtraBody        map[string]any    `gorm:"serializer:json"` // 额外请求体参数
 	Weight           int
@@ -61,6 +62,7 @@ type ChatLog struct {
 	TraceID       string `gorm:"index"`
 	ProviderModel string `gorm:"index"`
 	ProviderName  string `gorm:"index"`
+	Backup        bool   // 本次响应由备用关联提供：主关联在本请求内全部失败出局后降级接管
 	Status        string `gorm:"index"` // error or success
 	Style         string // 类型
 	UserAgent     string `gorm:"index"` // 用户代理

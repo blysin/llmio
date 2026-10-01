@@ -48,6 +48,7 @@
     "provider_model": "Provider Model",
     "type": "Type",
     "provider": "Provider",
+    "role": "Role",
     "actions": "Actions"
   },
   "mobile": {
@@ -59,6 +60,10 @@
     "provider": "Provider",
     "type": "Type"
   },
+  "role": {
+    "primary": "Primary",
+    "backup": "Backup"
+  },
   "detail": {
     "title": "Log Detail: {{id}}",
     "created_at": "Created At:",
@@ -69,6 +74,7 @@
     "basic_info": "Basic Info",
     "model_name": "Model Name",
     "provider": "Provider",
+    "provider_role": "Provider Role",
     "provider_model": "Provider Model",
     "type": "Type",
     "size": "Response Size",

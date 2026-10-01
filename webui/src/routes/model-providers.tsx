@@ -672,8 +672,11 @@ export default function ModelProvidersPage() {
     );
   });
 
-  // 按权重排序
+  // 按权重排序；备用关联始终沉到主关联之后，避免两类混杂在一起
   const sortedModelProviders = [...filteredModelProviders].sort((a, b) => {
+    const backupA = a.Backup ? 1 : 0;
+    const backupB = b.Backup ? 1 : 0;
+    if (backupA !== backupB) return backupA - backupB;
     if (weightSortOrder === "none") return 0;
     return weightSortOrder === "asc" ? a.Weight - b.Weight : b.Weight - a.Weight;
   });
@@ -1068,6 +1071,7 @@ export default function ModelProvidersPage() {
                       <TableHead>{t('association_table.provider_model')}</TableHead>
                       <TableHead>{t('association_table.type')}</TableHead>
                       <TableHead>{t('association_table.provider')}</TableHead>
+                      <TableHead>{t('association_table.role')}</TableHead>
                       <TableHead>{t('association_table.tool_call')}</TableHead>
                       <TableHead>{t('association_table.structured_output')}</TableHead>
                       <TableHead>{t('association_table.vision')}</TableHead>
@@ -1095,6 +1099,7 @@ export default function ModelProvidersPage() {
                     {sortedModelProviders.map((association) => {
                       const provider = providers.find(p => p.ID === association.ProviderID);
                       const isAssociationEnabled = association.Status ?? false;
+                      const isBackupAssociation = association.Backup ?? false;
                       const statusBars = providerStatus[association.ID];
                       return (
                         <TableRow key={association.ID}>
@@ -1104,6 +1109,13 @@ export default function ModelProvidersPage() {
                           </TableCell>
                           <TableCell>{provider?.Type ?? t('common:unknown')}</TableCell>
                           <TableCell>{provider?.Name ?? t('common:unknown')}</TableCell>
+                          <TableCell>
+                            <span
+                              className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${isBackupAssociation ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}
+                            >
+                              {isBackupAssociation ? t('association_table.role_backup') : t('association_table.role_primary')}
+                            </span>
+                          </TableCell>
                           <TableCell>
                             <span className={association.ToolCall ? "text-green-600" : "text-red-600"}>
                               {association.ToolCall ? '✓' : '✗'}
@@ -1199,6 +1211,7 @@ export default function ModelProvidersPage() {
               {sortedModelProviders.map((association) => {
                 const provider = providers.find(p => p.ID === association.ProviderID);
                 const isAssociationEnabled = association.Status ?? true;
+                const isBackupAssociation = association.Backup ?? false;
                 const statusBars = providerStatus[association.ID];
                 return (
                   <div key={association.ID} className="py-3 space-y-3">
@@ -1207,11 +1220,18 @@ export default function ModelProvidersPage() {
                         <h3 className="font-semibold text-sm truncate">{provider?.Name ?? t('association_table.unknown_provider')}</h3>
                         <p className="text-[11px] text-muted-foreground">{t('association_table.mobile.provider_type')}: {association.ProviderModel}</p>
                       </div>
-                      <span
-                        className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${isAssociationEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}
-                      >
-                        {isAssociationEnabled ? t('association_table.active') : t('association_table.inactive')}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${isBackupAssociation ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}
+                        >
+                          {isBackupAssociation ? t('association_table.role_backup') : t('association_table.role_primary')}
+                        </span>
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${isAssociationEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}
+                        >
+                          {isAssociationEnabled ? t('association_table.active') : t('association_table.inactive')}
+                        </span>
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <MobileInfoItem label={t('association_table.mobile.provider_type')} value={provider?.Type ?? t('common:unknown')} />

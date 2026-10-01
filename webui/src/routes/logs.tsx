@@ -391,7 +391,7 @@ export default function LogsPage() {
           <div className="h-full flex flex-col">
             <div className="flex-1 overflow-y-auto">
               <div className="hidden sm:block w-full">
-                <Table className="min-w-[1520px]">
+                <Table className="min-w-[1620px]">
                   <TableHeader className="z-10 sticky top-0 bg-secondary/90 backdrop-blur text-secondary-foreground">
                     <TableRow className="hover:bg-secondary/90">
                       <TableHead>{t('table.id')}</TableHead>
@@ -408,6 +408,7 @@ export default function LogsPage() {
                       <TableHead>{t('table.provider_model')}</TableHead>
                       <TableHead>{t('table.type')}</TableHead>
                       <TableHead>{t('table.provider')}</TableHead>
+                      <TableHead>{t('table.role')}</TableHead>
                       <TableHead>{t('table.actions')}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -444,6 +445,15 @@ export default function LogsPage() {
                         <TableCell className="max-w-[120px] truncate text-xs" title={log.ProviderModel}>{log.ProviderModel}</TableCell>
                         <TableCell className="text-xs">{log.Style}</TableCell>
                         <TableCell className="text-xs">{log.ProviderName}</TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {log.Backup ? (
+                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                              {t('role.backup')}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">{t('role.primary')}</span>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <div className="flex gap-2">
                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openDetailDialog(log)}>
@@ -520,7 +530,14 @@ export default function LogsPage() {
                       </div>
                       <div className="space-y-1">
                         <p className="text-muted-foreground text-[10px] uppercase tracking-wide">{t('mobile.provider')}</p>
-                        <p className="truncate">{log.ProviderName}</p>
+                        <p className="truncate">
+                          {log.ProviderName}
+                          {log.Backup && (
+                            <span className="ml-1.5 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              {t('role.backup')}
+                            </span>
+                          )}
+                        </p>
                       </div>
                       <div className="space-y-1">
                         <p className="text-muted-foreground text-[10px] uppercase tracking-wide">{t('mobile.type')}</p>
@@ -627,6 +644,12 @@ export default function LogsPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <DetailCard label={t('detail.model_name')} value={selectedLog.Name} />
                     <DetailCard label={t('detail.provider')} value={selectedLog.ProviderName || '-'} />
+                    <DetailCard
+                      label={t('detail.provider_role')}
+                      value={selectedLog.Backup
+                        ? <span className="text-amber-600 font-medium">{t('role.backup')}</span>
+                        : t('role.primary')}
+                    />
                     <DetailCard label={t('detail.provider_model')} value={selectedLog.ProviderModel || '-'} mono />
                     <DetailCard label={t('detail.type')} value={selectedLog.Style || '-'} />
                     <DetailCard label={t('detail.size')} value={selectedLog.Size ? formatBytes(selectedLog.Size) : '-'} />
