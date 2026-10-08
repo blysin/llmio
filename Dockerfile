@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:1.7
-
+# 不使用 # syntax= 指定外部 dockerfile 前端镜像，改为依赖 BuildKit 内置前端，
+# 规避 BuildKit v0.28 + 外部 docker/dockerfile:1.7 镜像 "frontend grpc server closed unexpectedly" 的偶发崩溃。
 # Build stage for the frontend
 FROM node:20 AS frontend-build
 WORKDIR /app

@@ -1,0 +1,33 @@
+@echo off
+rem ============================================================================
+rem  build-image.bat - Windows wrapper for build-image.sh (runs inside WSL)
+rem
+rem  Usage:
+rem    build-image.bat                  auto-derive next patch version
+rem    build-image.bat -v v0.8.17       specify version
+rem    build-image.bat --no-push        build and tag locally, skip push
+rem    build-image.bat --dry-run        print the plan only
+rem
+rem  Override the WSL distro with the LLMIO_WSL_DISTRO environment variable
+rem  (default: Ubuntu-24.04).
+rem ============================================================================
+setlocal
+
+rem Switch console to UTF-8 so the script's Chinese output renders correctly.
+chcp 65001 >nul 2>&1
+
+set "DISTRO=%LLMIO_WSL_DISTRO%"
+if "%DISTRO%"=="" set "DISTRO=Ubuntu-24.04"
+
+rem Run the bash script from the project root (this file's directory) inside WSL.
+wsl.exe -d %DISTRO% --cd "%~dp0." -- bash ./build-image.sh --push-latest %*
+set "RC=%ERRORLEVEL%"
+
+rem Keep the window open when launched by double-click.
+if "%~1"=="" (
+  echo.
+  echo [exit code %RC%]
+  pause
+)
+
+exit /b %RC%
