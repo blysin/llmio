@@ -59,5 +59,16 @@
     "timeline": "Failed to fetch token usage trend: {{message}}",
     "timeline_models": "Failed to fetch model list: {{message}}",
     "provider_model_usage": "Failed to fetch provider/model usage: {{message}}"
+  },
+  "trend": {
+    "success": "Success",
+    "error": "Error",
+    "running": "Running",
+    "input": "Input",
+    "cached": "Cached",
+    "output": "Output"
+  },
+  "latency": {
+    "count": "Calls"
   }
 }

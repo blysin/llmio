@@ -59,5 +59,16 @@
     "timeline": "获取 Tokens 用量趋势失败: {{message}}",
     "timeline_models": "获取模型列表失败: {{message}}",
     "provider_model_usage": "获取供应商/模型用量失败: {{message}}"
+  },
+  "trend": {
+    "success": "成功",
+    "error": "失败",
+    "running": "运行中",
+    "input": "输入",
+    "cached": "缓存",
+    "output": "输出"
+  },
+  "latency": {
+    "count": "调用次数"
   }
 }

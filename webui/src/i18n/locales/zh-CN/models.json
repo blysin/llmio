@@ -220,7 +220,9 @@
     "model_deleted": "模型 {{name}} 删除成功",
     "model_delete_failed": "删除模型失败: {{message}}",
     "association_delete_failed": "删除关联失败: {{message}}",
-    "order_save_failed": "保存排序失败: {{message}}"
+    "order_save_failed": "保存排序失败: {{message}}",
+    "fetch_models_failed": "获取模型列表失败: {{message}}",
+    "fetch_providers_failed": "获取提供商列表失败: {{message}}"
   },
   "validation": {
     "name_required": "名称不能为空",

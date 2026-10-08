@@ -59,5 +59,16 @@
     "timeline": "取得 Tokens 用量趨勢失敗: {{message}}",
     "timeline_models": "取得模型列表失敗: {{message}}",
     "provider_model_usage": "取得供應商/模型用量失敗: {{message}}"
+  },
+  "trend": {
+    "success": "成功",
+    "error": "失敗",
+    "running": "執行中",
+    "input": "輸入",
+    "cached": "快取",
+    "output": "輸出"
+  },
+  "latency": {
+    "count": "呼叫次數"
   }
 }

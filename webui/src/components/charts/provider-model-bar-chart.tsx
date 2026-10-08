@@ -13,6 +13,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ProviderModelUsage } from "@/lib/api"
+import { seriesVar } from "@/lib/palette"
 
 // 两组柱子并排：总 Tokens 与缓存 Tokens。
 // 注意缓存 Tokens 是总 Tokens 的子集（cached ⊆ prompt ⊆ total），只能并排对比，堆叠会重复计数。
@@ -41,8 +42,8 @@ export function ProviderModelBarChart({ data }: ProviderModelBarChartProps) {
 
   // color 不能省：ChartStyle 只为带 color 的 config 项生成 --color-* 变量
   const chartConfig: ChartConfig = {
-    tokens: { label: t('provider_model.series_total'), color: "var(--chart-1)" },
-    cached_tokens: { label: t('provider_model.series_cached'), color: "var(--chart-2)" },
+    tokens: { label: t('provider_model.series_total'), color: seriesVar(0) },
+    cached_tokens: { label: t('provider_model.series_cached'), color: seriesVar(1) },
   }
 
   const chartData = data.map((item) => ({

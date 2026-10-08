@@ -19,6 +19,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { TimelinePoint, TimelineRange } from "@/lib/api"
+import { seriesVar } from "@/lib/palette"
 
 // 时间维度 -> i18n key。对象键序即下拉展示顺序。
 // 用字面量映射而不是拼接字符串：i18n 的 key 有编译期校验，拼出来的字符串过不了类型检查。
@@ -65,8 +66,8 @@ export function TokenTrendChart({ data, range, onRangeChange, models, model, onM
   // color 不能省：ChartStyle 只为带 color 的 config 项生成 --color-* 变量，
   // 缺了它 stroke="var(--color-x)" 会落到无效值（bar-chart 的柱子就是这么变黑的）。
   const chartConfig: ChartConfig = {
-    tokens: { label: t('timeline.series_total'), color: "var(--chart-1)" },
-    cached_tokens: { label: t('timeline.series_cached'), color: "var(--chart-2)" },
+    tokens: { label: t('timeline.series_total'), color: seriesVar(0) },
+    cached_tokens: { label: t('timeline.series_cached'), color: seriesVar(1) },
   }
 
   return (

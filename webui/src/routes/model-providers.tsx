@@ -93,6 +93,7 @@ const modelEditSchema = z.object({
   time_out: z.number().min(0, { message: "超时时间不能为负数" }),
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
+  prefer_direct: z.boolean(),
 });
 
 export default function ModelProvidersPage() {
@@ -138,6 +139,7 @@ export default function ModelProvidersPage() {
       time_out: 60,
       strategy: "lottery",
       breaker: false,
+      prefer_direct: false,
     },
   });
 
@@ -294,6 +296,12 @@ export default function ModelProvidersPage() {
     openCreateDialog,
     submit,
     sortProviderModels,
+    peakTerms,
+    setPeakTerms,
+    peakSubmitAttempt,
+    autofill,
+    refreshAutofill,
+    adoptCandidate,
   } = useModelProviderForm({
     selectedModelId,
     models,
@@ -543,6 +551,7 @@ export default function ModelProvidersPage() {
       time_out: model.TimeOut,
       strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
       breaker: model.Breaker ?? false,
+      prefer_direct: model.PreferDirect ?? false,
     });
     setModelEditOpen(true);
   };
@@ -556,6 +565,7 @@ export default function ModelProvidersPage() {
       time_out: 60,
       strategy: "lottery",
       breaker: false,
+      prefer_direct: false,
     });
     setModelEditOpen(true);
   };
@@ -570,6 +580,7 @@ export default function ModelProvidersPage() {
       time_out: 60,
       strategy: "lottery",
       breaker: false,
+      prefer_direct: false,
     });
     setModelEditSaving(false);
   };
@@ -611,6 +622,7 @@ export default function ModelProvidersPage() {
           time_out: values.time_out,
           strategy: values.strategy,
           breaker: values.breaker,
+          prefer_direct: values.prefer_direct,
         });
 
         setModels((prev) => sortCardModels([...prev, created]));
@@ -1449,6 +1461,22 @@ export default function ModelProvidersPage() {
 
               <FormField
                 control={modelEditForm.control}
+                name="prefer_direct"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">{t('model_form.prefer_direct')}</FormLabel>
+                      <p className="text-[11px] text-muted-foreground">{t('model_form.prefer_direct_desc')}</p>
+                    </div>
+                    <FormControl>
+                      <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={modelEditForm.control}
                 name="strategy"
                 render={({ field }) => (
                   <FormItem className="rounded-lg border p-4 space-y-3">
@@ -1523,6 +1551,12 @@ export default function ModelProvidersPage() {
         providerModelsLoading={providerModelsLoading}
         sortProviderModels={sortProviderModels}
         loadProviderModels={loadProviderModels}
+        peakTerms={peakTerms}
+        setPeakTerms={setPeakTerms}
+        peakSubmitAttempt={peakSubmitAttempt}
+        autofill={autofill}
+        onAutofillRefresh={refreshAutofill}
+        onAdoptCandidate={adoptCandidate}
       />
 
       <ModelProviderTestDialog

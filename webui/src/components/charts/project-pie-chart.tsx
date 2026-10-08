@@ -15,43 +15,39 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ProjectCount, StatMetric } from "@/lib/api"
+import { seriesVar } from "@/lib/palette"
 
-const predefinedColors = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-  "var(--chart-6)",
-  "var(--chart-7)",
-  "var(--chart-8)",
-  "var(--chart-9)",
-  "var(--chart-10)",
-]
-
-const generateChartConfig = (data: ProjectCount[], metricLabel: string) => {
+// 颜色走项目统一色板（palette.ts 的 seriesVar，对应 index.css 的 --series-1..8）。
+// 原先引用的是 shadcn 默认的 --chart-*，本主题从未定义，导致扇区 fill 回落到黑色。
+// 配置项按数值降序排列，使图例/扇区颜色（series-1..N）与「最大→最小」顺序一致。
+const generateChartConfig = (data: ProjectCount[], metricLabel: string): ChartConfig => {
+  const sorted = [...data].sort((a, b) => b.value - a.value)
   const config: ChartConfig = {
     value: {
       label: metricLabel,
+      color: seriesVar(0),
     },
   }
 
-  data.forEach((item, index) => {
+  sorted.forEach((item, index) => {
     config[item.project] = {
       label: item.project,
-      color: predefinedColors[index % predefinedColors.length],
+      color: seriesVar(index),
     }
   })
 
   return config
 }
 
+// 按数值降序，最大扇区从 12 点方向起，相邻色相区分度最高（palette 的 CVD 校验按相邻槽位测）。
 const generateChartData = (data: ProjectCount[]) => {
-  return data.map((item, index) => ({
-    project: item.project,
-    value: item.value,
-    fill: predefinedColors[index % predefinedColors.length],
-  }))
+  return [...data]
+    .sort((a, b) => b.value - a.value)
+    .map((item, index) => ({
+      project: item.project,
+      value: item.value,
+      fill: seriesVar(index),
+    }))
 }
 
 interface ProjectChartPieDonutTextProps {
@@ -86,7 +82,10 @@ export function ProjectChartPieDonutText({ data, metric }: ProjectChartPieDonutT
               label
               labelLine={false}
               innerRadius={70}
-              strokeWidth={1}
+              startAngle={90}
+              endAngle={-270}
+              stroke="var(--card)"
+              strokeWidth={2}
             />
             <ChartLegend
               content={<ChartLegendContent nameKey="project" payload={undefined} />}
