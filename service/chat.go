@@ -291,7 +291,7 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		defer reader.Close()
 		if ioLog {
 			if err := gorm.G[models.ChatIO](models.DB).Create(ctx, &models.ChatIO{
-				Input: string(before.raw),
+				Input: models.BodyBytes(before.raw),
 				LogId: logId,
 			}); err != nil {
 				return err
