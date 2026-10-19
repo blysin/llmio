@@ -1,5 +1,6 @@
 .openmcp
 .claude
+.workbuddy/
 llmio.db
 llmio
 llmio.exe
