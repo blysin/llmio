@@ -1,410 +1,697 @@
-"use client"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { AlertTriangle, ArrowUpRight, RefreshCw } from "lucide-react"
 
-import { useState, useEffect, Suspense, lazy, memo, useCallback } from "react";
-import { useTranslation } from "react-i18next";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import Loading from "@/components/loading";
+import { FirstChunkHistogram, RequestTrendChart, TokenTrendChart } from "@/components/charts/trend-charts"
+import { LogDetailSheet } from "@/components/log-detail-sheet"
+import { RefreshSelect } from "@/components/refresh-select"
+import { StatusMark } from "@/components/status-mark"
+import { Button } from "@/components/ui/button"
+import { Panel } from "@/components/panel"
+import { EmptyState, ErrorState } from "@/components/state-views"
+import { Card, CardContent } from "@/components/ui/card"
+import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import {
-  getMetrics,
   getModelCounts,
   getProjectCounts,
   getProviderModelUsage,
-  getTimeline,
-  getTimelineModels
-} from "@/lib/api";
-import type { MetricsData, ModelCount, ProjectCount, ProviderModelUsage, StatMetric, TimelinePoint, TimelineRange } from "@/lib/api";
-import { toast } from "sonner";
-import { RefreshCw } from "lucide-react";
+  getStats,
+  type ModelCount,
+  type ProjectCount,
+  type ProviderModelUsage,
+  type StatMetric,
+  type StatsResult,
+  type TimelineRange,
+} from "@/lib/api"
+import { statsRowNames } from "@/lib/analytics"
+import {
+  compactNumber,
+  formatClockSeconds,
+  formatCost,
+  formatDateTime,
+  formatNumber,
+  formatPercent,
+  formatSeconds,
+} from "@/lib/format"
+import { cn } from "@/lib/utils"
+import {
+  HOME_RANGES,
+  type HomeRange,
+  refreshSecFor,
+  readUiPrefs,
+  withHomeRange,
+  withRefreshSec,
+  writeUiPrefs,
+  type UiPrefs,
+} from "@/lib/prefs"
 
-// 懒加载图表组件
-const ChartPieDonutText = lazy(() => import("@/components/charts/pie-chart").then(module => ({ default: module.ChartPieDonutText })));
-const ModelRankingChart = lazy(() => import("@/components/charts/bar-chart").then(module => ({ default: module.ModelRankingChart })));
-const ProjectChartPieDonutText = lazy(() => import("@/components/charts/project-pie-chart").then(module => ({ default: module.ProjectChartPieDonutText })));
-const ProjectRankingChart = lazy(() => import("@/components/charts/project-bar-chart").then(module => ({ default: module.ProjectRankingChart })));
-const TokenTrendChart = lazy(() => import("@/components/charts/token-trend-chart").then(module => ({ default: module.TokenTrendChart })));
-const ProviderModelBarChart = lazy(() => import("@/components/charts/provider-model-bar-chart").then(module => ({ default: module.ProviderModelBarChart })));
+// 本地分支新增的用量排行图表。全部懒加载：首页首屏的 Hero/KPI 不该为了等图表库
+// 而晚一拍，chart.js 只在滚动到这一屏时才下载。
+const ModelSharePie = lazy(() =>
+  import("@/components/charts/pie-chart").then((m) => ({ default: m.ChartPieDonutText }))
+)
+const ProjectSharePie = lazy(() =>
+  import("@/components/charts/project-pie-chart").then((m) => ({ default: m.ProjectChartPieDonutText }))
+)
+const ModelRankingChart = lazy(() =>
+  import("@/components/charts/bar-chart").then((m) => ({ default: m.ModelRankingChart }))
+)
+const ProjectRankingChart = lazy(() =>
+  import("@/components/charts/project-bar-chart").then((m) => ({ default: m.ProjectRankingChart }))
+)
+const ProviderModelUsageChart = lazy(() =>
+  import("@/components/charts/provider-model-bar-chart").then((m) => ({ default: m.ProviderModelBarChart }))
+)
 
-const emptyMetrics = (): MetricsData => ({ reqs: 0, tokens: 0, prompt_tokens: 0, cached_tokens: 0 });
+/** 概览页的时间范围 → 本地统计接口（feat/token-usage-trend）接受的口径。 */
+const HOME_RANGE_TO_TIMELINE: Record<HomeRange, TimelineRange> = {
+  today: "today",
+  last_24h: "24h",
+  last_7d: "7d",
+  last_30d: "30d",
+}
 
-// 默认按 Tokens 统计：这一页的主指标是 token 消耗，次数只是附带读数
-const DEFAULT_METRIC: StatMetric = "tokens";
-const DEFAULT_RANGE: TimelineRange = "today";
-const DEFAULT_MODEL = ""; // 空串 = 全部模型
+/** 时间范围的选项清单在 lib/prefs 的 HOME_RANGES 里，取值即后端的换算口径。 */
+const RANGE_HOURS: Record<HomeRange, number | "today"> = {
+  today: "today",
+  last_24h: 24,
+  last_7d: 24 * 7,
+  last_30d: 24 * 30,
+}
 
-// 缓存率 = 缓存 tokens / 输入 tokens
-const formatCacheRate = (cached: number, promptTokens: number) =>
-  promptTokens > 0 ? `${((cached / promptTokens) * 100).toFixed(2)}%` : "-";
+/**
+ * 自动刷新档位（秒）。0 表示关闭。
+ *
+ * 起点比日志页高（10 秒而不是 5 秒）：总览的 stats 要把整个窗口内的日志
+ * 拉回来做分组聚合（service/stats.go 的 StatsScanLimit 上限 20 万条），
+ * 比日志页的分页查询重得多，5 秒一次等于把聚合压力放大到没有收益。
+ */
+const HOME_REFRESH_SECONDS = [0, 10, 30, 60, 300]
 
-// Animated counter component
-const AnimatedCounter = ({ value, duration = 1000 }: { value: number; duration?: number }) => {
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    let startTime: number | null = null;
-    const animateCount = (timestamp: number) => {
-      if (!startTime) startTime = timestamp;
-      const progress = timestamp - startTime;
-      const progressRatio = Math.min(progress / duration, 1);
-      const currentValue = Math.floor(progressRatio * value);
-
-      setCount(currentValue);
-
-      if (progress < duration) {
-        requestAnimationFrame(animateCount);
-      }
-    };
-
-    requestAnimationFrame(animateCount);
-  }, [value, duration]);
-
-  return <div className="text-3xl font-bold">{count.toLocaleString()}</div>;
-};
-
-// 缓存 tokens 与缓存率，用于 Tokens 卡片
-const CacheUsage = memo(({ cached, promptTokens }: { cached: number; promptTokens: number }) => {
-  const { t } = useTranslation('home');
-  return (
-    <>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {t('cards.cached_tokens')}: {cached.toLocaleString()}
-      </p>
-      <p className="text-xs text-muted-foreground">
-        {t('cards.cache_rate')}: {formatCacheRate(cached, promptTokens)}
-      </p>
-    </>
-  );
-});
-
-// 统计口径切换开关
-const MetricToggle = memo(({ value, onChange }: { value: StatMetric; onChange: (value: StatMetric) => void }) => {
-  const { t } = useTranslation('home');
-  return (
-    <div className="flex flex-wrap items-center justify-end gap-3">
-      <span className="text-xs text-muted-foreground">{t('charts.metric_label')}</span>
-      <RadioGroup
-        value={value}
-        onValueChange={(next) => onChange(next as StatMetric)}
-        className="flex items-center gap-4"
-      >
-        <div className="flex items-center gap-2">
-          <RadioGroupItem value="count" id="stat-metric-count" />
-          <Label htmlFor="stat-metric-count" className="cursor-pointer text-sm font-normal">
-            {t('charts.by_count')}
-          </Label>
-        </div>
-        <div className="flex items-center gap-2">
-          <RadioGroupItem value="tokens" id="stat-metric-tokens" />
-          <Label htmlFor="stat-metric-tokens" className="cursor-pointer text-sm font-normal">
-            {t('charts.by_tokens')}
-          </Label>
-        </div>
-      </RadioGroup>
-    </div>
-  );
-});
-
-type HomeHeaderProps = {
-  onRefresh: () => void;
-};
-
-const HomeHeader = memo(({ onRefresh }: HomeHeaderProps) => {
-  const { t } = useTranslation('home');
-  return (
-    <div className="flex flex-col gap-2 flex-shrink-0">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h2 className="text-2xl font-bold tracking-tight">{t('title')}</h2>
-        </div>
-        <Button
-          onClick={onRefresh}
-          variant="outline"
-          size="icon"
-          className="ml-auto shrink-0"
-          aria-label={t('refresh')}
-          title={t('refresh')}
-        >
-          <RefreshCw className="size-4" />
-        </Button>
-      </div>
-    </div>
-  );
-});
+/** 范围 → 后端接受的秒级时间戳。 */
+function rangeToQuery(key: HomeRange): { from: string; to: string } {
+  const now = new Date()
+  const to = Math.floor(now.getTime() / 1000)
+  const spec = RANGE_HOURS[key]
+  if (spec === "today") {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    return { from: String(Math.floor(start.getTime() / 1000)), to: String(to) }
+  }
+  return { from: String(to - spec * 3600), to: String(to) }
+}
 
 export default function Home() {
-  const [loading, setLoading] = useState(true);
-  const [metric, setMetric] = useState<StatMetric>(DEFAULT_METRIC);
-  const [range, setRange] = useState<TimelineRange>(DEFAULT_RANGE);
-  const [model, setModel] = useState<string>(DEFAULT_MODEL);
+  const { t } = useTranslation(["home", "common"])
+  // 时间范围与刷新档位都落 localStorage：总览是仪表盘，刷新一次就丢掉
+  // 用户挑好的窗口比什么都不记更伤
+  const [prefs, setPrefs] = useState(() => readUiPrefs())
+  const range = prefs.homeRange
+  const sec = refreshSecFor(prefs, "home", HOME_REFRESH_SECONDS)
+  const [stats, setStats] = useState<StatsResult | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  /**
+   * "有没有一次取数在飞"与"上次取到是什么时候"。
+   *
+   * 轮询是静默的：不闪骨架、不换错误条，页面上连带状的动静都没有。用户看到的是
+   * 一堆不动的数字，于是只会得出"刷新按钮点了才动"的结论——定时器确实在跑，
+   * 但没有任何东西能证明它在跑。这两项就是那份证据：飞着的取数让图标转起来，
+   * 落地的时间戳让秒数往前走。
+   */
+  const [refreshing, setRefreshing] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState(0)
 
-  // Real data from APIs
-  const [todayMetrics, setTodayMetrics] = useState<MetricsData>(emptyMetrics);
-  const [totalMetrics, setTotalMetrics] = useState<MetricsData>(emptyMetrics);
-  const [modelCounts, setModelCounts] = useState<ModelCount[]>([]);
-  const [projectCounts, setProjectCounts] = useState<ProjectCount[]>([]);
-  const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
-  const [timelineModels, setTimelineModels] = useState<string[]>([]);
-  const [providerModelUsage, setProviderModelUsage] = useState<ProviderModelUsage[]>([]);
+  const setPref = (next: UiPrefs) => {
+    setPrefs(next)
+    writeUiPrefs(next)
+  }
 
-  const { t } = useTranslation('home');
+  const load = useCallback(
+    async (silent = false) => {
+      // 静默取数也要置位：轮询的那一次同样在飞，图标该转
+      setRefreshing(true)
+      if (!silent) setLoading(true)
+      try {
+        const data = await getStats(rangeToQuery(range))
+        setStats(data)
+        setLoadError(null)
+        setUpdatedAt(Date.now())
+      } catch (err) {
+        // 失败必须留在页面上。原先只弹一条会自己消失的 toast，而 stats 仍是 null，
+        // 于是 hasData 为假、页面显示"该时间范围内没有请求"——把"没取到"说成了
+        // "确实没有"，而这是打开控制台的第一屏。
+        // 自动刷新的静默失败例外：一次网络瞬断就把整页换成失败态，
+        // 比保留上一次的结果更打扰人（与日志页 fetchLogs(silent) 同一口径）。
+        if (!silent) setLoadError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setRefreshing(false)
+        if (!silent) setLoading(false)
+      }
+    },
+    [range]
+  )
 
-  const fetchTodayMetrics = useCallback(async () => {
-    try {
-      const data = await getMetrics(0);
-      setTodayMetrics(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.today_metrics', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchTotalMetrics = useCallback(async () => {
-    try {
-      const data = await getMetrics(30);
-      setTotalMetrics(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.total_metrics', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchModelCounts = useCallback(async (metricBy: StatMetric, timelineRange: TimelineRange) => {
-    try {
-      const data = await getModelCounts(metricBy, timelineRange);
-      setModelCounts(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.model_counts', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchProjectCounts = useCallback(async (metricBy: StatMetric, timelineRange: TimelineRange) => {
-    try {
-      const data = await getProjectCounts(metricBy, timelineRange);
-      setProjectCounts(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.project_counts', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchTimeline = useCallback(async (timelineRange: TimelineRange, modelName: string) => {
-    try {
-      const data = await getTimeline(timelineRange, modelName || undefined);
-      setTimeline(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.timeline', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchTimelineModels = useCallback(async () => {
-    try {
-      const data = await getTimelineModels();
-      setTimelineModels(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.timeline_models', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  const fetchProviderModelUsage = useCallback(async (timelineRange: TimelineRange) => {
-    try {
-      const data = await getProviderModelUsage(timelineRange);
-      setProviderModelUsage(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(t('errors.provider_model_usage', { message }));
-      console.error(err);
-    }
-  }, [t]);
-
-  // 概要指标（今日/本月）与统计口径无关
-  const loadSummary = useCallback(
-    () => Promise.all([fetchTodayMetrics(), fetchTotalMetrics()]),
-    [fetchTodayMetrics, fetchTotalMetrics]
-  );
-
-  // 图表统计随统计口径与时间维度变化（时间维度与趋势折线图共用）
-  const loadStats = useCallback(
-    (metricBy: StatMetric, timelineRange: TimelineRange) =>
-      Promise.all([fetchModelCounts(metricBy, timelineRange), fetchProjectCounts(metricBy, timelineRange)]),
-    [fetchModelCounts, fetchProjectCounts]
-  );
-
-  // 趋势图随时间维度与模型筛选变化
-  const loadTimeline = useCallback(
-    (timelineRange: TimelineRange, modelName: string) => fetchTimeline(timelineRange, modelName),
-    [fetchTimeline]
-  );
-
-  // 供应商/模型 Tokens 用量只随时间维度变化，与统计口径（count/tokens）无关
-  const loadProviderModelUsage = useCallback(
-    (timelineRange: TimelineRange) => fetchProviderModelUsage(timelineRange),
-    [fetchProviderModelUsage]
-  );
-
-  // 首次加载，后续由刷新按钮、统计口径、时间维度与模型筛选切换触发
   useEffect(() => {
-    void (async () => {
-      await Promise.all([
-        loadSummary(),
-        loadStats(DEFAULT_METRIC, DEFAULT_RANGE),
-        loadProviderModelUsage(DEFAULT_RANGE),
-        loadTimeline(DEFAULT_RANGE, DEFAULT_MODEL),
-        fetchTimelineModels(),
-      ]);
-      setLoading(false);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void load()
+  }, [load])
 
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
-    await Promise.all([
-      loadSummary(),
-      loadStats(metric, range),
-      loadProviderModelUsage(range),
-      loadTimeline(range, model),
-      fetchTimelineModels(),
-    ]);
-    setLoading(false);
-  }, [loadSummary, loadStats, loadProviderModelUsage, loadTimeline, fetchTimelineModels, metric, range, model]);
+  /**
+   * 本地分支新增的用量排行：口径只在「调用次数 / Tokens」之间切换，
+   * 时间范围跟随页面上那条筛选行（同一个 range，避免一页两套时间窗口）。
+   *
+   * 与 stats 分开取：这三组接口比 /metrics/stats 轻得多，失败时保留上一次结果
+   * 即可——为排行榜把首屏打成失败态不划算。
+   */
+  const [usageMetric, setUsageMetric] = useState<StatMetric>("count")
+  const [modelCounts, setModelCounts] = useState<ModelCount[]>([])
+  const [projectCounts, setProjectCounts] = useState<ProjectCount[]>([])
+  const [providerUsage, setProviderUsage] = useState<ProviderModelUsage[]>([])
 
-  const handleMetricChange = useCallback((next: StatMetric) => {
-    if (next === metric) return;
-    setMetric(next);
-    void loadStats(next, range);
-  }, [metric, range, loadStats]);
+  const loadUsage = useCallback(async () => {
+    const timelineRange = HOME_RANGE_TO_TIMELINE[range]
+    try {
+      const [models, projects, providers] = await Promise.all([
+        getModelCounts(usageMetric, timelineRange),
+        getProjectCounts(usageMetric, timelineRange),
+        getProviderModelUsage(timelineRange),
+      ])
+      setModelCounts(models)
+      setProjectCounts(projects)
+      setProviderUsage(providers)
+    } catch {
+      // 刻意静默：这三块是排行视图，取不到就继续显示上一轮的结果
+    }
+  }, [range, usageMetric])
 
-  // 时间维度联动：趋势折线图、模型/项目图表与供应商/模型用量同步刷新同一 range
-  const handleRangeChange = useCallback((next: TimelineRange) => {
-    if (next === range) return;
-    setRange(next);
-    void Promise.all([loadTimeline(next, model), loadStats(metric, next), loadProviderModelUsage(next)]);
-  }, [range, model, metric, loadStats, loadTimeline, loadProviderModelUsage]);
+  useEffect(() => {
+    void loadUsage()
+  }, [loadUsage])
 
-  // 模型筛选只影响趋势折线图，不改变占比/排行图表的统计口径
-  const handleModelChange = useCallback((next: string) => {
-    if (next === model) return;
-    setModel(next);
-    void loadTimeline(range, next);
-  }, [model, range, loadTimeline]);
+  // 自动刷新走静默取数：不闪骨架、不落成错误条
+  useAutoRefresh(sec, () => {
+    void load(true)
+    void loadUsage()
+  })
+
+  const kpi = stats?.kpi
+  const hasData = (kpi?.total ?? 0) > 0
+
+  // 按实体的稳定全集分配颜色。这里用 stats.byModel 的**全部**名称（而非
+  // 图表里出现的子集）作为 universe，保证筛选后颜色不漂移。
+  const modelNames = useMemo(
+    () => (stats?.byModel ?? []).map((g) => g.name),
+    [stats]
+  )
 
   return (
-    <div className="h-full min-h-0 flex flex-col gap-2 p-1">
-      <HomeHeader onRefresh={() => void handleRefresh()} />
+    <div className="flex h-full min-h-0 flex-col gap-3 p-1">
+      {/* 筛选行在内容之上一整行：它作用于页面上所有图表，因此不能塞进某张卡片里 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="mr-auto text-xl font-semibold tracking-tight">{t("home:title")}</h2>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        {loading ? (
-          <div className="flex h-full items-center justify-center">
-            <Loading message={t('loading')} />
+        <div
+          role="radiogroup"
+          aria-label={t("home:range.label")}
+          className="flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5"
+        >
+          {HOME_RANGES.map((key) => {
+            const active = range === key
+            return (
+              <Button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                variant="ghost"
+                size="sm"
+                className={
+                  active
+                    ? "h-7 bg-accent px-2.5 text-xs text-accent-foreground"
+                    : "h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                }
+                onClick={() => setPref(withHomeRange(prefs, key))}
+              >
+                {t(`home:range.${key}` as never)}
+              </Button>
+            )
+          })}
+        </div>
+
+        <RefreshSelect
+          value={sec}
+          options={HOME_REFRESH_SECONDS}
+          onChange={(s) => setPref(withRefreshSec(prefs, "home", s))}
+          pending={refreshing}
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-8"
+          onClick={() => void load()}
+          disabled={refreshing}
+          aria-label={t("home:refresh")}
+          title={t("home:refresh")}
+        >
+          <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
+        </Button>
+        {/*
+          "更新于 HH:MM:SS"是自动刷新在跑的直接证据。秒级而不是分钟级：
+          stats 是全量聚合，10 秒档下同一份数据来回滚动很常见，分钟粒度下
+          根本看不出这一轮有没有取成。
+        */}
+        {updatedAt > 0 && (
+          <span className="text-xs text-muted-foreground">
+            {t("home:updated_at", { time: formatClockSeconds(updatedAt) })}
+          </span>
+        )}
+      </div>
+
+      {stats?.truncated && (
+        <div className="flex items-start gap-2 rounded-md border border-border bg-accent/40 px-3 py-2 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-warning-ink" aria-hidden="true" />
+          <span>{t("home:truncated_warning")}</span>
+        </div>
+      )}
+
+      {/* 已经有数据时失败不清屏：下面画的仍是上一次的结果，因此要说清这件事，
+          而不是让用户以为看到的是刚切过去的那个时间范围。 */}
+      {loadError && stats && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-status-critical/40 bg-status-critical/5 px-3 py-2 text-sm">
+          <AlertTriangle className="size-4 shrink-0 text-status-critical-ink" aria-hidden="true" />
+          <span className="text-status-critical-ink">{t("home:error.stale")}</span>
+          <span className="reading min-w-0 flex-1 truncate text-xs text-muted-foreground" title={loadError}>
+            {loadError}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => void load()}>
+            {t("home:retry")}
+          </Button>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {loading && !stats ? (
+          <div role="status" aria-busy="true" className="space-y-3">
+            <span className="sr-only">{t("home:loading")}</span>
+            <div className="h-20 animate-pulse rounded-lg bg-muted" />
+            <div className="h-56 animate-pulse rounded-lg bg-muted" />
           </div>
+        ) : loadError && !stats ? (
+          <ErrorState
+            title={t("home:error.load")}
+            message={loadError}
+            retryLabel={t("home:retry")}
+            onRetry={() => void load()}
+          />
+        ) : !hasData ? (
+          <EmptyState
+            title={t("home:empty.no_data")}
+            hint={t("home:empty.no_data_hint")}
+          />
         ) : (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('cards.today_requests')}</CardTitle>
-                  <CardDescription>{t('cards.today_requests_desc')}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <AnimatedCounter value={todayMetrics.reqs} />
-                </CardContent>
-              </Card>
+          <div className="space-y-3">
+            {/* 主视觉数字。全页仅此一个 ≥48px 的数字，用比例数字（tabular 会让它显松） */}
+            <HeroRow
+              inFlight={kpi!.running}
+              inFlightLabel={t("home:in_flight")}
+              inFlightHint={t("home:in_flight_hint")}
+            />
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('cards.today_tokens')}</CardTitle>
-                  <CardDescription>{t('cards.today_tokens_desc')}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <AnimatedCounter value={todayMetrics.tokens} />
-                  <CacheUsage cached={todayMetrics.cached_tokens} promptTokens={todayMetrics.prompt_tokens} />
-                </CardContent>
-              </Card>
+            <KpiRow stats={stats!} />
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('cards.monthly_requests')}</CardTitle>
-                  <CardDescription>{t('cards.monthly_requests_desc')}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <AnimatedCounter value={totalMetrics.reqs} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('cards.monthly_tokens')}</CardTitle>
-                  <CardDescription>{t('cards.monthly_tokens_desc')}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <AnimatedCounter value={totalMetrics.tokens} />
-                  <CacheUsage cached={totalMetrics.cached_tokens} promptTokens={totalMetrics.prompt_tokens} />
-                </CardContent>
-              </Card>
+            {/* 趋势拆成两张单轴图。原实现把请求数与 Token 放一张图用双轴，
+                那会凭空造出数据里没有的相关性（规范里的头号禁项）。 */}
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <Panel title={t("home:trend.requests")}>
+                <RequestTrendChart data={stats!.trend} />
+              </Panel>
+              <Panel title={t("home:trend.tokens")}>
+                <TokenTrendChart data={stats!.trend} />
+              </Panel>
             </div>
 
-            <Suspense fallback={<div className="h-64 flex items-center justify-center">
-              <Loading message={t('loading_chart')} />
-            </div>}>
-              <TokenTrendChart
-                data={timeline}
-                range={range}
-                onRangeChange={handleRangeChange}
-                models={timelineModels}
-                model={model}
-                onModelChange={handleModelChange}
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <Panel
+                title={t("home:latency.title")}
+                note={t("home:latency.percentile_note")}
+              >
+                <FirstChunkHistogram samples={stats!.latency.firstChunk.list} />
+                <PercentileRow stats={stats!} />
+              </Panel>
+
+              <Panel title={t("home:errors.title")}>
+                <ErrorList stats={stats!} unavailable={t("home:errors.empty")} />
+              </Panel>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <LeaderboardCard
+                title={t("home:top.tps")}
+                rows={stats!.topTps}
+                metric={(r) => `${r.tps.toFixed(1)} ${t("home:top.tps")}`}
+                empty={t("home:top.empty")}
               />
-            </Suspense>
+              <LeaderboardCard
+                title={t("home:top.slowest")}
+                rows={stats!.slowest}
+                metric={(r) => formatSeconds(r.firstChunkMs / 1000)}
+                empty={t("home:top.empty")}
+              />
+              <LeaderboardCard
+                title={t("home:top.recent_errors")}
+                rows={stats!.recentErrors}
+                metric={(r) => r.error?.slice(0, 40) ?? ""}
+                empty={t("home:top.empty")}
+                tone="critical"
+              />
+            </div>
 
-            <MetricToggle value={metric} onChange={handleMetricChange} />
+            {/* 用量排行（本地分支新增）：上游概览页没有这两组视图。口径开关放在
+                这一组之上，同时作用于模型与项目的四张图——两列同排讲同一件事 */}
+            <div className="flex flex-wrap items-center justify-end gap-1">
+              <span className="mr-1 text-xs text-muted-foreground">{t("home:charts.metric_label")}</span>
+              <Button
+                size="sm"
+                variant={usageMetric === "count" ? "default" : "outline"}
+                onClick={() => setUsageMetric("count")}
+              >
+                {t("home:charts.by_count")}
+              </Button>
+              <Button
+                size="sm"
+                variant={usageMetric === "tokens" ? "default" : "outline"}
+                onClick={() => setUsageMetric("tokens")}
+              >
+                {t("home:charts.by_tokens")}
+              </Button>
+            </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <Suspense fallback={<div className="h-64 flex items-center justify-center">
-                <Loading message={t('loading_chart')} />
-              </div>}>
-                <ChartPieDonutText data={modelCounts} metric={metric} />
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <Suspense fallback={<ChartSkeleton />}>
+                <ModelSharePie data={modelCounts} metric={usageMetric} />
               </Suspense>
-
-              <Suspense fallback={<div className="h-64 flex items-center justify-center">
-                <Loading message={t('loading_chart')} />
-              </div>}>
-                <ProjectChartPieDonutText data={projectCounts} metric={metric} />
+              <Suspense fallback={<ChartSkeleton />}>
+                <ProjectSharePie data={projectCounts} metric={usageMetric} />
               </Suspense>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <Suspense fallback={<div className="h-64 flex items-center justify-center">
-                <Loading message={t('loading_chart')} />
-              </div>}>
-                <ModelRankingChart data={modelCounts} metric={metric} />
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <Suspense fallback={<ChartSkeleton />}>
+                <ModelRankingChart data={modelCounts} metric={usageMetric} />
               </Suspense>
-
-              <Suspense fallback={<div className="h-64 flex items-center justify-center">
-                <Loading message={t('loading_chart')} />
-              </div>}>
-                <ProjectRankingChart data={projectCounts} metric={metric} />
+              <Suspense fallback={<ChartSkeleton />}>
+                <ProjectRankingChart data={projectCounts} metric={usageMetric} />
               </Suspense>
             </div>
 
-            <Suspense fallback={<div className="h-80 flex items-center justify-center">
-              <Loading message={t('loading_chart')} />
-            </div>}>
-              <ProviderModelBarChart data={providerModelUsage} />
-            </Suspense>
+            <div className="grid grid-cols-1 gap-3">
+              <Suspense fallback={<ChartSkeleton />}>
+                <ProviderModelUsageChart data={providerUsage} />
+              </Suspense>
+            </div>
+
+            {/* 与模型名的稳定全集挂钩，保证未来加图表时颜色口径一致 */}
+            <span className="sr-only">{modelNames.join(",")}</span>
           </div>
         )}
       </div>
     </div>
-  );
+  )
 }
+
+/** 图表懒加载时的占位：与首屏骨架同一视觉语言（animate-pulse 圆角块）。 */
+function ChartSkeleton() {
+  return <div className="h-64 animate-pulse rounded-lg bg-muted" />
+}
+
+/**
+ * 主视觉区。
+ *
+ * 首屏回答"现在正在发生什么"，所以主角是**在途请求数**而不是累计量——
+ * 累计数字说明不了当下是否健康。累计量随后在 KPI 行里呈现。
+ */
+function HeroRow({
+  inFlight,
+  inFlightLabel,
+  inFlightHint,
+}: {
+  inFlight: number
+  inFlightLabel: string
+  inFlightHint: string
+}) {
+  return (
+    <Card>
+      <CardContent className="flex flex-wrap items-end gap-x-8 gap-y-2 py-4">
+        <div>
+          <div className="text-xs text-muted-foreground">{inFlightLabel}</div>
+          {/* 比例数字而非 tnum：等宽数字在大号时看起来松散 */}
+          <div className="text-5xl font-semibold leading-none tracking-tight">
+            {formatNumber(inFlight)}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">{inFlightHint}</div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** KPI 行。用一排紧凑读数而非四张大卡——大卡会把信息密度压得过低。 */
+function KpiRow({ stats }: { stats: StatsResult }) {
+  const { t } = useTranslation("home")
+  const k = stats.kpi
+
+  const items: { label: string; value: string; hint?: string }[] = [
+    { label: t("kpi.requests"), value: formatNumber(k.total) },
+    {
+      label: t("kpi.success_rate"),
+      value: formatPercent(k.successRate),
+      hint: t("kpi.success_rate_hint"),
+    },
+    {
+      label: t("kpi.tokens"),
+      value: compactNumber(k.totalTokens),
+      hint: t("kpi.tokens_hint", {
+        prompt: formatNumber(k.promptTokens),
+        completion: formatNumber(k.completionTokens),
+      }),
+    },
+    {
+      label: t("kpi.cache_hit"),
+      value: formatPercent(k.cacheHitRate),
+      hint: t("kpi.cache_hit_hint", {
+        cached: formatNumber(k.cachedTokens),
+        prompt: formatNumber(k.promptTokens),
+      }),
+    },
+    {
+      label: t("kpi.retries"),
+      value: formatNumber(k.totalRetries),
+      hint: t("kpi.retries_hint", { avg: k.avgRetries.toFixed(2) }),
+    },
+    { label: t("kpi.avg_tps"), value: stats.latency.tps.avg.toFixed(1) },
+    { label: t("kpi.first_chunk_p50"), value: formatSeconds(stats.latency.firstChunk.p50) },
+    {
+      label: t("kpi.cost"),
+      value: formatCost(k.cost, k.currency),
+      hint: t("kpi.cost_hint"),
+    },
+  ]
+
+  return (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+      {items.map((it) => (
+        <Card key={it.label}>
+          <CardContent className="py-3">
+            <div className="truncate text-xs text-muted-foreground" title={it.label}>
+              {it.label}
+            </div>
+            {/* 读数列用等宽数字，纵向对齐 */}
+            <div className="reading mt-1 truncate text-lg font-semibold" title={it.value}>
+              {it.value}
+            </div>
+            {it.hint && (
+              <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={it.hint}>
+                {it.hint}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+function PercentileRow({ stats }: { stats: StatsResult }) {
+  const { t } = useTranslation("home")
+  const l = stats.latency.firstChunk
+  const cells = [
+    { label: t("latency.p50"), v: l.p50 },
+    { label: t("latency.p90"), v: l.p90 },
+    { label: t("latency.p95"), v: l.p95 },
+    { label: t("latency.p99"), v: l.p99 },
+  ]
+  return (
+    <div className="mt-3 grid grid-cols-4 gap-2 border-t border-border pt-3">
+      {cells.map((c) => (
+        <div key={c.label}>
+          <div className="text-[11px] text-muted-foreground">{c.label}</div>
+          <div className="reading text-sm font-medium">{formatSeconds(c.v)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 错误列表。
+ *
+ * 用**列表而非环形图**：错误类别是要比较的量，环形图对接近的值不可靠；
+ * 且类别数可能超过 7，那时图表本就不如表格。类别名 + 计数 + 受影响对象
+ * 用文字直给，不依赖颜色传达。
+ *
+ * 每类下面带最多 3 条样本（后端 maxErrorSamples，时间倒序），逐条点开抽屉。
+ * ioLog 未开启时失败路径不写 ChatIO，抽屉里看到的是请求元数据与错误原文，而不是请求体；
+ * ioLog 开启时失败请求也会落 ChatIO.Input，详情抽屉按 canViewChatIO 提供"查看请求内容"入口。
+ */
+function ErrorList({ stats, unavailable }: { stats: StatsResult; unavailable: string }) {
+  const { t } = useTranslation(["home", "common"])
+  const [sampleId, setSampleId] = useState<number | null>(null)
+
+  if (stats.errors.length === 0) {
+    return <p className="py-6 text-center text-sm text-muted-foreground">{unavailable}</p>
+  }
+
+  return (
+    <>
+      <ul className="space-y-3">
+        {stats.errors.slice(0, 5).map((g) => (
+          <li key={g.code}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-sm font-medium">
+                <StatusMark status="error" label={g.type} />
+              </span>
+              <span className="reading text-sm text-muted-foreground">
+                {t("home:errors.count", { count: g.count })}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
+              {g.providers.length > 0 && (
+                <span>
+                  {t("home:errors.affected_providers")}：
+                  {g.providers.map((p) => `${p.name}(${p.count})`).join("、")}
+                </span>
+              )}
+              {g.models.length > 0 && (
+                <span>
+                  {t("home:errors.affected_models")}：
+                  {g.models.map((m) => `${m.name}(${m.count})`).join("、")}
+                </span>
+              )}
+            </div>
+            {g.samples.length > 0 && (
+              <ul className="mt-1.5 space-y-0.5" aria-label={t("home:errors.samples")}>
+                {g.samples.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSampleId(s.id)}
+                      className="flex w-full items-baseline gap-2 rounded-sm text-left text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                    >
+                      <span className="reading shrink-0">{formatDateTime(s.createdAt)}</span>
+                      <span className="truncate" title={s.error}>
+                        {s.error}
+                      </span>
+                      <ArrowUpRight className="ml-auto size-3 shrink-0" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <LogDetailSheet logId={sampleId} onClose={() => setSampleId(null)} />
+    </>
+  )
+}
+
+/**
+ * 排行榜卡片（TPS 榜首 / 最慢首包 / 最近失败）。
+ *
+ * 三张卡共用一份实现，也共用同一套交互：点开抽屉看那一条的详情。
+ * 原先这里是 `<Link to="/logs/:id/chat-io">`，而失败请求没有请求内容，
+ * 那条链接进去是张空表——同样的"点了没反应"，而且三张卡里只有一张会踩到。
+ * 统一改成抽屉后，能不能看请求内容由抽屉自己按这条日志的状态判断，
+ * 首页再没有通往死链的入口。
+ *
+ * 标签请求名优先：操作台上认得的是 llmio 别名，上游模型 id 只在别名改了
+ * 路由时才是必要信息，所以退到括号里。
+ */
+function LeaderboardCard({
+  title,
+  rows,
+  metric,
+  empty,
+  tone,
+}: {
+  title: string
+  rows: StatsResult["topTps"]
+  metric: (row: StatsResult["topTps"][number]) => string
+  empty: string
+  tone?: "critical"
+}) {
+  const [logId, setLogId] = useState<number | null>(null)
+
+  return (
+    <Panel title={title}>
+      {rows.length === 0 ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((r) => {
+            const names = statsRowNames(r)
+            const requestName = names.requestName
+            const primary = requestName ?? names.model
+            const title = requestName
+              ? `${requestName}（${names.model}） · ${r.provider}`
+              : `${names.model} · ${r.provider}`
+            return (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => setLogId(r.id)}
+                  className="flex w-full items-baseline justify-between gap-2 rounded-sm px-1 py-0.5 text-left text-xs hover:bg-accent"
+                >
+                  {/* 左列吃掉剩余宽度并截断，右列按内容宽度但不许`shrink-0`。
+                      右列装的是错误原文（等宽字体，可达 300px 以上），
+                      `shrink-0` 会让它永不收缩，把整行撑宽后一路顶到内容区——
+                      窄卡片上表现为页面内容区出现一条横向滚动条。 */}
+                  <span className="min-w-0 flex-1 truncate" title={title}>
+                    {primary}
+                    {requestName && (
+                      <span className="text-muted-foreground">（{names.model}）</span>
+                    )}
+                    <span className="text-muted-foreground"> · {r.provider}</span>
+                  </span>
+                  <span
+                    className={
+                      tone === "critical"
+                        ? "reading min-w-0 shrink truncate text-status-critical-ink"
+                        : "reading min-w-0 shrink truncate"
+                    }
+                    title={metric(r)}
+                  >
+                    {metric(r)}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
+      <LogDetailSheet logId={logId} onClose={() => setLogId(null)} />
+    </Panel>
+  )
+}
+

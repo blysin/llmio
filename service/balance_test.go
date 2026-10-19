@@ -90,7 +90,7 @@ func runBalanceChat(t *testing.T, meta ProvidersWithMeta) (*http.Response, *mode
 		Header:    http.Header{},
 		RemoteIP:  "127.0.0.1",
 		UserAgent: "llmio-test",
-	})
+	}, NewBridgeNotes())
 }
 
 // 备用关联不参与日常轮询：主关联健康时必须只打主关联，备用上游一次都不能被碰。
@@ -212,7 +212,7 @@ func TestRecordLogPreservesBackupFlag(t *testing.T) {
 	processer := func(_ context.Context, _ io.Reader, _ bool, _ time.Time) (*models.ChatLog, *models.OutputUnion, error) {
 		return &models.ChatLog{FirstChunkTime: time.Second, Size: 7}, &models.OutputUnion{}, nil
 	}
-	RecordLog(ctx, time.Now(), io.NopCloser(strings.NewReader("data")), processer, logId, Before{}, false)
+	RecordLog(ctx, time.Now(), io.NopCloser(strings.NewReader("data")), processer, logId, Before{}, false, NewBridgeNotes())
 
 	got, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).First(ctx)
 	if err != nil {

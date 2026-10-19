@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atopos31/llmio/balancers"
+	"github.com/atopos31/llmio/bridge"
 	"github.com/atopos31/llmio/consts"
 	"github.com/atopos31/llmio/models"
 	"github.com/atopos31/llmio/pkg/token"
@@ -21,13 +22,106 @@ import (
 	"gorm.io/gorm"
 )
 
-func BalanceChat(ctx context.Context, start time.Time, style string, before Before, providersWithMeta ProvidersWithMeta, reqMeta models.ReqMeta) (*http.Response, *models.ChatLog, error) {
+// retryLogEntry 是失败重试日志的载体：除了 ChatLog 本身，还要把**这次请求的原始请求体**
+// 一并带上，以便在 ioLog 开关打开时把请求体写进 chat_ios.input（不写响应）。
+type retryLogEntry struct {
+	Log models.ChatLog
+	Raw []byte
+}
+
+// 撞锁重试的三个常数。
+//
+// 一次 SQLITE_BUSY 至少要等满驱动的 busy_timeout（5000ms）才会返回，所以次数
+// 不能多：这些重试都跑在 RecordLog 的后台 goroutine 里，不占请求的连接。
+// 退避用 attempt 的线性倍数——撞锁通常是"另一笔写还没提交"，几十毫秒就够。
+const (
+	ioCreateAttempts   = 3
+	logUpdateAttempts  = 3
+	transientRetryBase = 150 * time.Millisecond
+)
+
+// sleepBackoff 是撞锁后的退避，可被 ctx 提前打断。
+func sleepBackoff(ctx context.Context, attempt int) {
+	d := transientRetryBase * time.Duration(attempt)
+	if d > time.Second {
+		d = time.Second
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// createChatIO 落一条 IO 记录。撞锁时**退回明文**重试。
+//
+// 压缩是优化、IO 记录是观测，两者都不该让一次成功的聊天变成失败：
+// 第一次按正常形态写（可能走块表），之后每次都带 SkipCompress——明文行没有块表
+// 写入，事务小得多，在锁竞争里活下来的概率高得多。丢掉的只是压缩率。
+func createChatIO(ctx context.Context, logId uint, raw []byte) error {
+	var lastErr error
+	for attempt := 0; attempt < ioCreateAttempts; attempt++ {
+		if attempt > 0 {
+			sleepBackoff(ctx, attempt)
+		}
+		rec := &models.ChatIO{
+			Input:        models.BodyBytes(raw),
+			LogId:        logId,
+			SkipCompress: attempt > 0,
+		}
+		err := gorm.G[models.ChatIO](models.DB).Create(ctx, rec)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !IsBusyErr(err) {
+			return err
+		}
+		slog.Warn("chat io 撞锁，退回明文重试", "attempt", attempt+1, "error", err)
+	}
+	return lastErr
+}
+
+// writeFailedIO 在 ioLog 开关打开时把请求体写进 chat_ios.input（不写响应）。
+// IO 记录是观测性功能，写入失败仅记日志，不传播为请求失败。
+func writeFailedIO(ctx context.Context, logId uint, raw []byte, ioLog bool) {
+	if !ioLog {
+		return
+	}
+	if err := createChatIO(ctx, logId, raw); err != nil {
+		slog.Error("save failed io error", "error", err)
+	}
+}
+
+// saveFailedLog 为"未进入 BalanceChat"的失败路径（模型不存在、无可用提供商）落一条
+// error 日志，并在 ioLog 开关打开时写 ChatIO.Input。返回新日志 ID。
+func saveFailedLog(ctx context.Context, style string, before Before, errMsg string) (uint, error) {
+	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
+	authKeyIOLog, _ := ctx.Value(consts.ContextKeyAuthKeyIOLog).(bool)
+	logId, err := SaveChatLog(ctx, models.ChatLog{
+		Name:      before.Model,
+		Status:    consts.StatusError,
+		Style:     style,
+		SessionID: before.SessionID,
+		AuthKeyID: authKeyID,
+		ChatIO:    authKeyIOLog,
+		Error:     errMsg,
+	})
+	if err != nil {
+		return 0, err
+	}
+	writeFailedIO(ctx, logId, before.raw, authKeyIOLog)
+	return logId, nil
+}
+
+func BalanceChat(ctx context.Context, start time.Time, style string, before Before, providersWithMeta ProvidersWithMeta, reqMeta models.ReqMeta, bridgeNotes *BridgeNotes) (*http.Response, *models.ChatLog, error) {
 	slog.Info("request", "model", before.Model, "stream", before.Stream, "tool_call", before.toolCall, "structured_output", before.structuredOutput, "image", before.image)
 
 	providerMap := providersWithMeta.ProviderMap
 
 	// 收集重试过程中的err日志
-	retryLog := make(chan models.ChatLog, providersWithMeta.MaxRetry)
+	retryLog := make(chan retryLogEntry, providersWithMeta.MaxRetry)
 	defer close(retryLog)
 
 	go RecordRetryLog(context.Background(), retryLog)
@@ -80,7 +174,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		return nil, nil, err
 	}
 
-	// 会话键在重试循环外解析一次：同一次请求的各次重试共用同一会话��，
+	// 会话键在重试循环外解析一次：同一次请求的各次重试共用同一会话键，
 	// 避免重试期间会话漂移（随机兜底分支尤其需要）
 	sessionKey := ResolveSessionKey(reqMeta.Header, before.SessionID, before.Model, authKeyID, before.raw)
 
@@ -113,10 +207,16 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			id, err := balancer.Pop()
 			if err != nil {
 				// 池子提前清空时把上一轮的真实原因一并带出，避免被误读成「没有配置关联模型」
+				var popErr error
 				if lastErr != nil {
-					return nil, nil, fmt.Errorf("balancer pop err: %v, last error: %w, traceID: %s%s", err, lastErr, traceID, backupHint())
+					popErr = fmt.Errorf("balancer pop err: %v, last error: %w, traceID: %s%s", err, lastErr, traceID, backupHint())
+				} else {
+					popErr = fmt.Errorf("balancer pop err: %v, traceID: %s%s", err, traceID, backupHint())
 				}
-				return nil, nil, fmt.Errorf("balancer pop err: %v, traceID: %s%s", err, traceID, backupHint())
+				if _, lerr := saveFailedLog(ctx, style, before, popErr.Error()); lerr != nil {
+					slog.Error("save failed log error", "error", lerr)
+				}
+				return nil, nil, popErr
 			}
 
 			modelWithProvider, ok := providersWithMeta.ModelWithProviderMap[id]
@@ -128,6 +228,27 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 			provider := providerMap[modelWithProvider.ProviderID]
 
+			// 每换一家上游，记账从头计：上一家的记账若留着，最终那条日志就会记着
+			// 产出这次响应的那家**没做过**的改写
+			bridgeNotes.reset()
+
+			// 客户端协议与上游协议不同时插一层翻译。候选池里可能混着两种协议的上游
+			// （见 ProvidersWithMetaBymodelsName），所以每次 Pop 之后重新判一次方向
+			translator := TranslatorFor(style, provider.Type)
+			if translator != nil {
+				slog.Info("bridging protocols", "from", style, "to", provider.Type, "provider", provider.Name)
+			}
+
+			// 分时段计价：按请求发起时刻 + **这一条关联的**峰谷条款解析出
+			// 生效单价并快照进日志。快照的是实际生效价，因此历史成本不会被
+			// 后来的时段配置改动所改写。
+			inputPrice, cacheReadPrice, outputPrice, peakPeriod := ResolvePricingFor(
+				ctx, start, modelWithProvider.Peak,
+				lo.FromPtrOr(modelWithProvider.InputPrice, 0),
+				lo.FromPtrOr(modelWithProvider.CacheReadPrice, 0),
+				lo.FromPtrOr(modelWithProvider.OutputPrice, 0),
+			)
+
 			// 日志构造提前到 provider 构建之前：provider 构建失败同样要留痕，
 			// 否则这一轮既没有重试日志也没有错误记录，问题无从追查
 			log := models.ChatLog{
@@ -138,6 +259,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				Backup:         usingBackup,
 				Status:         consts.StatusRunning,
 				Style:          style,
+				UpstreamStyle:  provider.Type,
 				UserAgent:      reqMeta.UserAgent,
 				RemoteIP:       reqMeta.RemoteIP,
 				AuthKeyID:      authKeyID,
@@ -145,18 +267,26 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				ChatIO:         authKeyIOLog,
 				Retry:          retry,
 				ProxyTime:      time.Since(start),
-				InputPrice:     lo.FromPtrOr(modelWithProvider.InputPrice, 0),
-				CacheReadPrice: lo.FromPtrOr(modelWithProvider.CacheReadPrice, 0),
-				OutputPrice:    lo.FromPtrOr(modelWithProvider.OutputPrice, 0),
+				InputPrice:     inputPrice,
+				CacheReadPrice: cacheReadPrice,
+				OutputPrice:    outputPrice,
 				Currency:       modelWithProvider.Currency,
+				PeakPeriod:     peakPeriod,
+			}
+			// 这次尝试失败的记录。记账要在这里快照：下一次尝试开头会把盒子清空，
+			// 而"这一家失败时我们丢了什么"正是排查重试时要看的东西。
+			// lastErr 顺带记下本轮真实原因，供轮次耗尽时兜底。
+			fail := func(err error) {
+				log.BridgeNotes = bridgeNotes.String()
+				lastErr = err
+				retryLog <- retryLogEntry{Log: log.WithError(err), Raw: before.raw}
 			}
 
 			chatModel, err := providers.New(provider.Type, provider.Config, provider.Proxy)
 			if err != nil {
 				// provider 配置损坏（非法 JSON、type 与上游协议不匹配等）不应硬失败整条请求：
 				// 记下本轮原因、把该候选清出候选池，让其它关联模型接手
-				retryLog <- log.WithError(err)
-				lastErr = err
+				fail(err)
 				balancer.Delete(id)
 				continue
 			}
@@ -176,18 +306,33 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				AuthKeyID:     authKeyID,
 			})
 
-			rawBody, err := buildUpstreamBody(before.raw, modelWithProvider.ExtraBody)
+			// 请求体：先按上游协议翻译，再套上关联行的 extra_body。
+			// 顺序不能反——extra_body 挂在这一条关联上，是按**上游协议**写的；先套再翻
+			// 的话，翻译层会把这些键当不认识的字段丢掉
+			reqBody := before.raw
+			if translator != nil {
+				converted, notes, err := translator.Request(reqBody, bridge.Options{})
+				if err != nil {
+					// 翻不过去 = 这家上游服务不了。与 BuildReq 失败同一条路：记账、
+					// 移出待选、换下一家
+					fail(fmt.Errorf("bridge request: %w", err))
+					balancer.Delete(id)
+					continue
+				}
+				bridgeNotes.record(notes)
+				reqBody = converted
+			}
+
+			rawBody, err := buildUpstreamBody(reqBody, modelWithProvider.ExtraBody)
 			if err != nil {
-				retryLog <- log.WithError(err)
-				lastErr = err
+				fail(err)
 				balancer.Delete(id)
 				continue
 			}
 
 			req, err := chatModel.BuildReq(ctx, headers, modelWithProvider.ProviderModel, rawBody)
 			if err != nil {
-				retryLog <- log.WithError(err)
-				lastErr = err
+				fail(err)
 				// 构建请求失败 移除待选
 				balancer.Delete(id)
 				continue
@@ -198,9 +343,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				// client.Do 失败常常是裸的 "context canceled"：客户端一断开，绑定在
 				// 请求 ctx 上的上游调用会被一并取消。打上阶段与归因后再落库，
 				// 否则日志里只剩下六个字母，看不出是客户端跑了还是上游没连上。
-				err = MarkStage(StageUpstreamRequest, ctx, err)
-				retryLog <- log.WithError(err)
-				lastErr = err
+				fail(MarkStage(StageUpstreamRequest, ctx, err))
 				// 请求失败 移除待选
 				balancer.Delete(id)
 				continue
@@ -211,9 +354,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				if err != nil {
 					slog.Error("read body error", "error", err)
 				}
-				statusErr := fmt.Errorf("status: %d, body: %s", res.StatusCode, string(byteBody))
-				retryLog <- log.WithError(statusErr)
-				lastErr = statusErr
+				fail(fmt.Errorf("status: %d, body: %s", res.StatusCode, string(byteBody)))
 
 				if res.StatusCode == http.StatusTooManyRequests {
 					// 达到RPM限制 降低权重
@@ -232,24 +373,32 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				if !strings.Contains(contentType, "text/event-stream") {
 					byteBody, err := io.ReadAll(res.Body)
 					if err != nil {
-						readErr := fmt.Errorf("read body failed: %w", err)
-						retryLog <- log.WithError(readErr)
-						lastErr = readErr
+						fail(fmt.Errorf("read body failed: %w", err))
 						balancer.Delete(id)
 						res.Body.Close()
 						continue
 					}
 
 					if matched, sample := matchProviderBodyError(string(byteBody), provider.ErrorMatcher); matched {
-						matchErr := fmt.Errorf("response matched provider error sample %q, body: %s", sample, string(byteBody))
-						retryLog <- log.WithError(matchErr)
-						lastErr = matchErr
+						fail(fmt.Errorf("response matched provider error sample %q, body: %s", sample, string(byteBody)))
 						balancer.Delete(id)
 						res.Body.Close()
 						continue
 					}
 
 					res.Body = io.NopCloser(bytes.NewReader(byteBody))
+				}
+			}
+
+			// 响应体：翻成客户端协议之后再交出去。必须在转发与记录**之前**——
+			// 客户端看到的和 ChatLog 记的都得是客户端协议（记录用的 processer 是按
+			// 客户端协议选的）
+			if translator != nil {
+				if err := bridgeResponse(translator, res, before.Stream, bridgeNotes); err != nil {
+					fail(fmt.Errorf("bridge response: %w", err))
+					balancer.Delete(id)
+					res.Body.Close()
+					continue
 				}
 			}
 
@@ -284,74 +433,155 @@ func buildUpstreamBody(raw []byte, extraBody map[string]any) ([]byte, error) {
 	return rawBody, nil
 }
 
-func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
-	for log := range retryLog {
-		if _, err := SaveChatLog(ctx, log); err != nil {
+func RecordRetryLog(ctx context.Context, retryLog chan retryLogEntry) {
+	for entry := range retryLog {
+		log := entry.Log
+		logId, err := SaveChatLog(ctx, log)
+		if err != nil {
 			slog.Error("save chat log error", "error", err)
+			continue
 		}
+		writeFailedIO(ctx, logId, entry.Raw, log.ChatIO)
 	}
 }
 
-func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool) {
-	// processer 出错时会回传它已经拿到的部分进度（size / 首字耗时）。
-	// 不接住的话，错误分支只写 Status/Error 两列，「流到一半才断」在日志上
-	// 就会显示成 0 字节 / 0 耗时，和「一个字节都没收到」完全无从区分。
-	var partial *models.ChatLog
-	recordFunc := func() error {
-		defer reader.Close()
-		if ioLog {
-			if err := gorm.G[models.ChatIO](models.DB).Create(ctx, &models.ChatIO{
-				Input: models.BodyBytes(before.raw),
-				LogId: logId,
-			}); err != nil {
-				return MarkStage(StageLogPersist, ctx, err)
-			}
+// RecordLog 是请求的**记录路径**：落 IO、读响应、把结果写回日志。
+//
+// 它跑在 handler 起的后台 goroutine 里（context.Background），所以这里的任何失败
+// 都不该反过来影响已经发给客户端的响应。2026-10-17 线上教训：数据库被锁住时，
+// 这里在落 ChatIO 那一步就把错误抛给"把请求标成 error"的分支，于是**成功的聊天
+// 全被记成失败**；结束时的 UPDATE 又跟着失败，那些行就永远停在 running。
+//
+// 现在三条规矩：
+//  1. IO 记录失败只降级（createChatIO 内部先退回明文重试），不改请求结论；
+//  2. 只有"读响应真的失败"才把日志标 error；
+//  3. 落库失败按撞锁重试——日志宁可晚到，不要永远在途。
+func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool, bridgeNotes *BridgeNotes) {
+	defer reader.Close()
+
+	ioStored := false
+	if ioLog {
+		// BodyBytes 不做拷贝：before.raw 由本请求独占，而 Create 是同步的，
+		// 等它读完才会继续往下走。真正的分块与压缩都在 BeforeCreate 里发生。
+		if err := createChatIO(ctx, logId, before.raw); err != nil {
+			slog.Warn("save chat io error（本次请求不记录 IO，请求本身不受影响）", "error", err)
+		} else {
+			ioStored = true
 		}
-		log, output, err := processer(ctx, reader, before.Stream, reqStart)
-		partial = log
-		if err != nil {
-			// 这里的 err 多半已经被上层（handler 的 io.Copy）打过阶段标记，
-			// MarkStage 幂等会原样放行；只有 processer 自己新产生的错误
-			// （如上游 SSE 里的 error 字段）才会在这里被补上阶段前缀。
-			return MarkStage(StageResponseStream, ctx, err)
-		}
-		log.Status = consts.StatusSuccess
-		// processer 返回的是只含耗时/用量/大小的空壳 log：ProviderName / Style / TraceID 等
-		// 能保留下来，靠的就是 GORM struct Updates 跳过零值字段。Backup 同理（随 insert 落库），
-		// 若这里改成 Save / Select("*") 会把备用标记擦成 false。
-		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
-			return MarkStage(StageLogPersist, ctx, err)
-		}
-		if ioLog {
-			if _, err := gorm.G[models.ChatIO](models.DB).Where("log_id = ?", logId).Updates(ctx, models.ChatIO{OutputUnion: *output}); err != nil {
-				return MarkStage(StageLogPersist, ctx, err)
-			}
-		}
-		return nil
 	}
-	if err := recordFunc(); err != nil {
+
+	log, output, err := processer(ctx, reader, before.Stream, reqStart)
+	if err != nil {
+		// 这里的 err 多半已经被上层（handler 的 io.Copy）打过阶段标记，
+		// MarkStage 幂等会原样放行；只有 processer 自己新产生的错误
+		// （如上游 SSE 里的 error 字段）才会在这里被补上阶段前缀。
 		update := models.ChatLog{
 			Status: consts.StatusError,
-			Error:  err.Error(),
+			Error:  MarkStage(StageResponseStream, ctx, err).Error(),
 		}
 		// 只补部分进度三列，不整体 Save：结构体 Updates 仍会跳过零值，
 		// 因此 Name / ProviderName / TraceID 这些 insert 时写好的字段不会被擦掉。
-		if partial != nil {
-			update.FirstChunkTime = partial.FirstChunkTime
-			update.ChunkTime = partial.ChunkTime
-			update.Size = partial.Size
+		// 不接住部分进度的话，「流到一半才断」在日志上会显示成 0 字节 / 0 耗时，
+		// 和「一个字节都没收到」完全无从区分。
+		if log != nil {
+			update.FirstChunkTime = log.FirstChunkTime
+			update.ChunkTime = log.ChunkTime
+			update.Size = log.Size
 		}
-		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, update); err != nil {
-			slog.Error("record log error", "error", err)
+		if uerr := updateChatLog(ctx, logId, update); uerr != nil {
+			slog.Error("record log error", "error", uerr)
+		}
+		return
+	}
+
+	log.Status = consts.StatusSuccess
+	// 协议互转的记账：响应侧要到流读完才完整，所以在这里（日志落库前）取
+	log.BridgeNotes = bridgeNotes.String()
+	if err := updateChatLog(ctx, logId, *log); err != nil {
+		// 连重试都撞锁：这次请求的"成功"结论没落库。**不能留在 running**——
+		// 界面上"一直显示在途"就是它；旧版本还会一直留到下次重启。
+		// 退一步写 error，并把原因写清楚：请求本身已经完成，只是状态没写进去。
+		// 兜底只试一次——前面已经撞满三次 busy_timeout，再久只会拖住这个 goroutine。
+		fallback := models.ChatLog{
+			Status: consts.StatusError,
+			Error:  "记录日志失败：请求已完成，但状态写入数据库时撞锁（" + err.Error() + "）",
+		}
+		if uerr := updateChatLogN(ctx, logId, fallback, 1); uerr != nil {
+			slog.Error("record log error（日志仍停在 running，等重启收尾）", "log_id", logId, "error", uerr)
+		}
+		return
+	}
+	if ioStored && output != nil {
+		if err := updateChatIOOutput(ctx, logId, output); err != nil {
+			slog.Warn("record chat io output error", "log_id", logId, "error", err)
 		}
 	}
 }
 
-func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
-	if err := gorm.G[models.ChatLog](models.DB).Create(ctx, &log); err != nil {
-		return 0, err
+// updateChatLog 更新一条日志，撞锁重试。
+func updateChatLog(ctx context.Context, logId uint, log models.ChatLog) error {
+	return updateChatLogN(ctx, logId, log, logUpdateAttempts)
+}
+
+// updateChatLogN 是 updateChatLog 的可指定次数版本（兜底路径只需要一次）。
+func updateChatLogN(ctx context.Context, logId uint, log models.ChatLog, attempts int) error {
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			sleepBackoff(ctx, attempt)
+		}
+		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, log); err != nil {
+			lastErr = err
+			if !IsBusyErr(err) {
+				return err
+			}
+			continue
+		}
+		return nil
 	}
-	return log.ID, nil
+	return lastErr
+}
+
+// updateChatIOOutput 回填响应体，撞锁重试（条数少，一次成功即可）。
+func updateChatIOOutput(ctx context.Context, logId uint, output *models.OutputUnion) error {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			sleepBackoff(ctx, attempt)
+		}
+		if _, err := gorm.G[models.ChatIO](models.DB).Where("log_id = ?", logId).
+			Updates(ctx, models.ChatIO{OutputUnion: *output}); err != nil {
+			lastErr = err
+			if !IsBusyErr(err) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+// SaveChatLog 插入一条日志。撞锁重试：这条 INSERT 在响应发出**之前**同步执行，
+// 失败会直接把一次正常聊天打成 500。重试时重置 ID，避免失败那次的 LAST_INSERT_ID
+// 被带进第二次 INSERT（GORM 会把它当显式主键）。
+func SaveChatLog(ctx context.Context, log models.ChatLog) (uint, error) {
+	var lastErr error
+	for attempt := 0; attempt < logUpdateAttempts; attempt++ {
+		if attempt > 0 {
+			sleepBackoff(ctx, attempt)
+			log.ID = 0
+		}
+		if err := gorm.G[models.ChatLog](models.DB).Create(ctx, &log); err != nil {
+			lastErr = err
+			if !IsBusyErr(err) {
+				return 0, err
+			}
+			continue
+		}
+		return log.ID, nil
+	}
+	return 0, lastErr
 }
 
 func BuildHeaders(source http.Header, withHeader bool, customHeaders map[string]string, stream bool, vars HeaderVars) http.Header {
@@ -421,13 +651,7 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Bef
 	model, err := gorm.G[models.Model](models.DB).Where("name = ?", before.Model).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if _, err := SaveChatLog(ctx, models.ChatLog{
-				Name:      before.Model,
-				Status:    consts.StatusError,
-				Style:     style,
-				SessionID: before.SessionID,
-				Error:     err.Error(),
-			}); err != nil {
+			if _, err := saveFailedLog(ctx, style, before, err.Error()); err != nil {
 				return nil, err
 			}
 			return nil, errors.New("not found model " + before.Model)
@@ -455,6 +679,9 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Bef
 	}
 
 	if len(modelWithProviders) == 0 {
+		if _, err := saveFailedLog(ctx, style, before, "not provider for model "+before.Model); err != nil {
+			return nil, err
+		}
 		return nil, errors.New("not provider for model " + before.Model)
 	}
 
@@ -462,11 +689,17 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Bef
 
 	providers, err := gorm.G[models.Provider](models.DB).
 		Where("id IN ?", lo.Map(modelWithProviders, func(mp models.ModelWithProvider, _ int) uint { return mp.ProviderID })).
-		Where("type = ?", style).
+		Where("type IN ?", ServableTypes(style)).
 		Find(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	// 直连优先，转换为兜底：只要这个模型下有一个说客户端话的上游，候选池就只有它们。
+	// 转换只在该模型下"没人说客户端话"时启用，行为可预期；现有部署（上游与客户端
+	// 同协议）的候选集也因此与转换功能上线前完全一致。
+	// 模型上可以把这条关掉（PreferDirect），关掉就是整池按权重摇
+	providers = poolFor(providers, style, model.PreferDirect)
 
 	providerMap := lo.KeyBy(providers, func(p models.Provider) uint { return p.ID })
 
