@@ -148,6 +148,27 @@ export function ModelFormDialog({ open, editingModel, saving, onClose, onSubmit 
 
             <FormField
               control={form.control}
+              name="context_length"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t("model_form.context_length")}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      {...field}
+                      onChange={(e) => field.onChange(+e.target.value)}
+                    />
+                  </FormControl>
+                  <p className="text-[13px] text-muted-foreground">
+                    {t("model_form.context_length_desc")}
+                  </p>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
               name="breaker"
               render={({ field }) => (
                 <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">

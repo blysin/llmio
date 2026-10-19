@@ -45,6 +45,9 @@ type ModelRequest struct {
 	TimeOut  int    `json:"time_out"`
 	Strategy string `json:"strategy"`
 	Breaker  bool   `json:"breaker"`
+	// ContextLength 上下文窗口大小（tokens），0 = 未设置。只对外展示用，
+	// 见 models.Model.ContextLength。
+	ContextLength int `json:"context_length"`
 	// PreferDirect 优先匹配相同协议。指针是为了区分"没传"（nil，按开处理，老客户端
 	// 不改行为）与"明确关掉"（false）
 	PreferDirect *bool `json:"prefer_direct"`
@@ -338,6 +341,13 @@ func CreateModel(c *gin.Context) {
 		return
 	}
 
+	// 负数上下文没有任何含义，而且它一旦落库就会原样出现在 GET /v1/models 里，
+	// 让客户端拿到一个荒诞的窗口。0 是合法的"未设置"，负值不是。
+	if req.ContextLength < 0 {
+		common.BadRequest(c, "context_length cannot be negative")
+		return
+	}
+
 	// Check if model exists
 	count, err := gorm.G[models.Model](models.DB).Where("name = ?", req.Name).Count(c.Request.Context(), "id")
 	if err != nil {
@@ -362,14 +372,15 @@ func CreateModel(c *gin.Context) {
 	}
 
 	model := models.Model{
-		Name:         req.Name,
-		Remark:       req.Remark,
-		MaxRetry:     req.MaxRetry,
-		TimeOut:      req.TimeOut,
-		Strategy:     strategy,
-		Breaker:      &req.Breaker,
-		PreferDirect: req.PreferDirect,
-		DisplayOrder: maxDisplayOrder + 1,
+		Name:          req.Name,
+		Remark:        req.Remark,
+		MaxRetry:      req.MaxRetry,
+		TimeOut:       req.TimeOut,
+		Strategy:      strategy,
+		Breaker:       &req.Breaker,
+		PreferDirect:  req.PreferDirect,
+		ContextLength: req.ContextLength,
+		DisplayOrder:  maxDisplayOrder + 1,
 	}
 
 	if err := gorm.G[models.Model](models.DB).Create(c.Request.Context(), &model); err != nil {
@@ -395,6 +406,11 @@ func UpdateModel(c *gin.Context) {
 		return
 	}
 
+	if req.ContextLength < 0 {
+		common.BadRequest(c, "context_length cannot be negative")
+		return
+	}
+
 	// Check if model exists
 	_, err = gorm.G[models.Model](models.DB).Where("id = ?", id).First(c.Request.Context())
 	if err != nil {
@@ -413,18 +429,30 @@ func UpdateModel(c *gin.Context) {
 
 	// Update fields
 	updates := models.Model{
-		Name:         req.Name,
-		Remark:       req.Remark,
-		MaxRetry:     req.MaxRetry,
-		TimeOut:      req.TimeOut,
-		Strategy:     strategy,
-		Breaker:      &req.Breaker,
-		PreferDirect: req.PreferDirect,
+		Name:          req.Name,
+		Remark:        req.Remark,
+		MaxRetry:      req.MaxRetry,
+		TimeOut:       req.TimeOut,
+		Strategy:      strategy,
+		Breaker:       &req.Breaker,
+		PreferDirect:  req.PreferDirect,
+		ContextLength: req.ContextLength,
 	}
 
 	if _, err := gorm.G[models.Model](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
 		common.InternalServerError(c, "Failed to update model: "+err.Error())
 		return
+	}
+
+	// 结构体更新会跳过零值，而 0 在 ContextLength 这里是"未设置"这个**合法取值**
+	// ——用户清空上下文大小时，上面那次更新会整条跳过它，旧值留在库里。
+	// 与 UpdateModelProvider 收尾处理 peak 同一个理由，这里补一次显式写入。
+	if req.ContextLength == 0 {
+		if _, err := gorm.G[models.Model](models.DB).Where("id = ?", id).
+			Update(c.Request.Context(), "context_length", 0); err != nil {
+			common.InternalServerError(c, "Failed to clear context_length: "+err.Error())
+			return
+		}
 	}
 
 	// Get updated model
@@ -964,6 +992,56 @@ func GetChatIO(c *gin.Context) {
 		"OfStringArray": chatIO.OfStringArray,
 		"Style":         style,
 	})
+}
+
+// DeleteLog 删除单条请求日志（连同它的 IO 记录）
+//
+// 与 /logs/cleanup 同一套语义：**硬删除**。这张表上挂着 DeletedAt，但清理
+// 路径从来不走软删——软删只是让行从列表里消失，请求体和响应体（单条可能上 MB）
+// 仍旧占着库文件，而"删掉这条日志"的诉求恰恰是把它从盘上拿掉
+// （对照 service/storage.go 的页回收 / 重整）。
+//
+// IO 必须先删：ChatIO 带 gorm.Model 的 DeletedAt，不 Unscoped 就只留个删除
+// 标记，而列表接口和界面都再也看不到它——那就是纯粹的空间泄漏。
+//
+// 两次删除放进同一个事务，与 service/log_cleanup.go 的 CleanLogsByDays 对齐：
+// 中途失败或请求被取消时整体回滚，不会留下「IO 已删、日志还在」的孤儿行。
+func DeleteLog(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		common.BadRequest(c, "Invalid ID")
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// 泛型接口 gorm.G[...] 没有 Unscoped，要绕过软删只能退回 *gorm.DB 链式 API，
+	// 所以请求 ctx 用 WithContext 手动接上（本文件其余 handler 走 gorm.G 时 ctx 是参数）。
+	var deletedRows int64
+	if err := models.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("log_id = ?", id).Delete(&models.ChatIO{}).Error; err != nil {
+			return fmt.Errorf("delete chat io: %w", err)
+		}
+
+		result := tx.Unscoped().Where("id = ?", id).Delete(&models.ChatLog{})
+		if result.Error != nil {
+			return fmt.Errorf("delete log: %w", result.Error)
+		}
+		deletedRows = result.RowsAffected
+		return nil
+	}); err != nil {
+		common.InternalServerError(c, "Failed to delete log: "+err.Error())
+		return
+	}
+
+	// 0 行受影响 = 这条本来就不在（别处已经删过，或者点了一个翻页前的旧 ID）。
+	// 别报成功：界面上删掉一条不存在的日志却弹"已删除"，是在替服务端说谎。
+	if deletedRows == 0 {
+		common.NotFound(c, "Log not found")
+		return
+	}
+
+	common.SuccessWithMessage(c, "Deleted", gin.H{"id": id})
 }
 
 // GetUserAgents 获取所有不重复的用户代理种类

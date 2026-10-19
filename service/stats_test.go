@@ -273,6 +273,14 @@ func TestClassifyError(t *testing.T) {
 		{name: "网络-EOF", in: `unexpected EOF`, wantCode: "network", wantType: "网络错误"},
 		{name: "网络-裸 EOF", in: `EOF`, wantCode: "network", wantType: "网络错误"},
 
+		// 客户端断开：以前一律落进"其他错误"，运维看不出这类"失败"其实是对端跑了
+		{name: "客户端断开-裸 context canceled", in: `context canceled`, wantCode: "client-cancel", wantType: "客户端断开"},
+		{name: "客户端断开-带阶段前缀", in: `[response_stream] canceled by client or intermediary proxy: context canceled`, wantCode: "client-cancel", wantType: "客户端断开"},
+		{name: "客户端断开优先于重试耗尽", in: `All retry failed: [upstream_request] canceled by client or intermediary proxy: context canceled, trace ID: abc123`, wantCode: "client-cancel", wantType: "客户端断开"},
+		// 阶段前缀不能把原有的正文规则带偏
+		{name: "阶段前缀不干扰超时判定", in: `[upstream_request] context deadline exceeded`, wantCode: "timeout", wantType: "超时"},
+		{name: "阶段前缀不干扰网络判定", in: `[upstream_request] dial tcp: connection refused`, wantCode: "network", wantType: "网络错误"},
+
 		{name: "完全无特征归其他", in: `something inexplicable happened`, wantCode: "other", wantType: "其他错误"},
 		{name: "空串归其他", in: ``, wantCode: "other", wantType: "其他错误"},
 

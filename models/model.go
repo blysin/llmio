@@ -34,6 +34,13 @@ type Model struct {
 	Strategy     string // 负载均衡策略 默认 lottery
 	Breaker      *bool  // 是否开启熔断
 	DisplayOrder int    // 模型展示顺序，值越大越靠前
+	// ContextLength 是模型上下文窗口大小（tokens），手填，0 表示未设置。
+	//
+	// 它只用于对外展示：GET /v1/models 会把它写成 context_length 与
+	// context_window 两个字段（不同客户端读的名字不一样）。服务端**不**拿它做
+	// 任何截断、校验或路由决策——填错了最坏的后果是客户端算错预算，
+	// 而不是请求被拦。
+	ContextLength int
 	// PreferDirect 优先匹配相同协议：候选池里先挑说客户端协议的提供商，一个都没有
 	// 才退回可转换的那些。关掉则整池按权重摇（见 service.poolFor）。
 	// nil 表示没配过（迁移上来的老行），按**开**处理——转换功能上线前候选池只有

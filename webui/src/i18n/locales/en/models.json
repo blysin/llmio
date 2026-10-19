@@ -110,6 +110,8 @@
     "remark": "Remark",
     "max_retry": "Max Retries",
     "timeout": "Timeout (s)",
+    "context_length": "Context Length (tokens)",
+    "context_length_desc": "The model's context window, advertised through GET /v1/models. Leave empty or 0 to unset.",
     "io_log": "IO Log",
     "breaker": "Circuit Breaker",
     "prefer_direct": "Prefer the same protocol",

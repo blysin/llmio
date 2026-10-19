@@ -139,7 +139,11 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 	}
 
 	if _, err := io.Copy(writer, tee); err != nil {
-		pw.CloseWithError(err)
+		// 这里的失败几乎都是客户端（或中间代理）中途断开：上游请求绑在同一个
+		// 请求 context 上，对端一走它就被取消，回灌给记录协程的就成了裸的
+		// "context canceled"。先打上阶段与归因标记，落库后才能看出
+		// 「断在流复制阶段、是对端先跑了」——这是唯一拿得到请求 ctx 的地方之一。
+		pw.CloseWithError(service.MarkStage(service.StageResponseStream, c.Request.Context(), err))
 		slog.Error("io copy", "err:", err)
 		return
 	}

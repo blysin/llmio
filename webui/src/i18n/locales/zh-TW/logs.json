@@ -20,6 +20,16 @@
     "success": "已清理 {{count}} 筆日誌",
     "failed": "清理失敗"
   },
+  "delete": {
+    "tooltip": "刪除日誌",
+    "title": "刪除日誌",
+    "description": "確定刪除日誌 {{id}} 嗎？這筆日誌與它記錄的輸入輸出會一併刪除，無法復原。",
+    "cancel": "取消",
+    "confirm": "確認刪除",
+    "deleting": "刪除中...",
+    "success": "已刪除日誌 {{id}}",
+    "failed": "刪除失敗"
+  },
   "filters": {
     "model": "模型名稱",
     "model_placeholder": "選擇模型",

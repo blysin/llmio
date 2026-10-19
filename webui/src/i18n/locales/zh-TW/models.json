@@ -110,6 +110,8 @@
     "remark": "備註",
     "max_retry": "重試次數限制",
     "timeout": "逾時時間(秒)",
+    "context_length": "上下文大小 (tokens)",
+    "context_length_desc": "模型的上下文視窗大小，透過 GET /v1/models 對外宣告。留空或 0 表示未設定。",
     "io_log": "IO 記錄",
     "breaker": "熔斷",
     "prefer_direct": "優先匹配相同協定",

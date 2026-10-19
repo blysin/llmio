@@ -93,7 +93,9 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 	for retry := range providersWithMeta.MaxRetry {
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			// 走到这里说明请求 context 已经取消：客户端断开，或中间代理掐了连接。
+			// 裸的 ctx.Err() 只有一个 "context canceled"，打上阶段再往上抛。
+			return nil, nil, MarkStage(StageUpstreamRequest, ctx, ctx.Err())
 		case <-timer.C:
 			return nil, nil, errors.New("retry time out")
 		default:
@@ -193,6 +195,10 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 			res, err := client.Do(req)
 			if err != nil {
+				// client.Do 失败常常是裸的 "context canceled"：客户端一断开，绑定在
+				// 请求 ctx 上的上游调用会被一并取消。打上阶段与归因后再落库，
+				// 否则日志里只剩下六个字母，看不出是客户端跑了还是上游没连上。
+				err = MarkStage(StageUpstreamRequest, ctx, err)
 				retryLog <- log.WithError(err)
 				lastErr = err
 				// 请求失败 移除待选
@@ -287,6 +293,10 @@ func RecordRetryLog(ctx context.Context, retryLog chan models.ChatLog) {
 }
 
 func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, processer Processer, logId uint, before Before, ioLog bool) {
+	// processer 出错时会回传它已经拿到的部分进度（size / 首字耗时）。
+	// 不接住的话，错误分支只写 Status/Error 两列，「流到一半才断」在日志上
+	// 就会显示成 0 字节 / 0 耗时，和「一个字节都没收到」完全无从区分。
+	var partial *models.ChatLog
 	recordFunc := func() error {
 		defer reader.Close()
 		if ioLog {
@@ -294,32 +304,44 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 				Input: models.BodyBytes(before.raw),
 				LogId: logId,
 			}); err != nil {
-				return err
+				return MarkStage(StageLogPersist, ctx, err)
 			}
 		}
 		log, output, err := processer(ctx, reader, before.Stream, reqStart)
+		partial = log
 		if err != nil {
-			return err
+			// 这里的 err 多半已经被上层（handler 的 io.Copy）打过阶段标记，
+			// MarkStage 幂等会原样放行；只有 processer 自己新产生的错误
+			// （如上游 SSE 里的 error 字段）才会在这里被补上阶段前缀。
+			return MarkStage(StageResponseStream, ctx, err)
 		}
 		log.Status = consts.StatusSuccess
 		// processer 返回的是只含耗时/用量/大小的空壳 log：ProviderName / Style / TraceID 等
 		// 能保留下来，靠的就是 GORM struct Updates 跳过零值字段。Backup 同理（随 insert 落库），
 		// 若这里改成 Save / Select("*") 会把备用标记擦成 false。
 		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, *log); err != nil {
-			return err
+			return MarkStage(StageLogPersist, ctx, err)
 		}
 		if ioLog {
 			if _, err := gorm.G[models.ChatIO](models.DB).Where("log_id = ?", logId).Updates(ctx, models.ChatIO{OutputUnion: *output}); err != nil {
-				return err
+				return MarkStage(StageLogPersist, ctx, err)
 			}
 		}
 		return nil
 	}
 	if err := recordFunc(); err != nil {
-		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, models.ChatLog{
+		update := models.ChatLog{
 			Status: consts.StatusError,
 			Error:  err.Error(),
-		}); err != nil {
+		}
+		// 只补部分进度三列，不整体 Save：结构体 Updates 仍会跳过零值，
+		// 因此 Name / ProviderName / TraceID 这些 insert 时写好的字段不会被擦掉。
+		if partial != nil {
+			update.FirstChunkTime = partial.FirstChunkTime
+			update.ChunkTime = partial.ChunkTime
+			update.Size = partial.Size
+		}
+		if _, err := gorm.G[models.ChatLog](models.DB).Where("id = ?", logId).Updates(ctx, update); err != nil {
 			slog.Error("record log error", "error", err)
 		}
 	}

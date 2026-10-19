@@ -43,6 +43,13 @@ export interface Model {
   // 后端按"开"处理
   PreferDirect?: boolean | null;
   DisplayOrder?: number;
+  /**
+   * 上下文窗口大小（tokens），0 = 未设置。只用于对外展示（GET /v1/models）。
+   *
+   * 与 DisplayOrder 一样标成可选：后端现在总会返回它（`init.go` 对存量行
+   * 回填 0），但把它标成必填只会让每个测试夹具多背一个与自身无关的字段。
+   */
+  ContextLength?: number;
 }
 
 export interface ModelWithProvider {
@@ -221,6 +228,7 @@ export async function createModel(model: {
   strategy: string;
   breaker: boolean;
   prefer_direct: boolean;
+  context_length: number;
 }): Promise<Model> {
   return apiRequest<Model>('/models', {
     method: 'POST',
@@ -236,6 +244,7 @@ export async function updateModel(id: number, model: {
   strategy?: string;
   breaker?: boolean;
   prefer_direct?: boolean;
+  context_length?: number;
 }): Promise<Model> {
   return apiRequest<Model>(`/models/${id}`, {
     method: 'PUT',
@@ -840,6 +849,18 @@ export async function getLogById(id: number): Promise<ChatLog | null> {
 
 export async function getChatIO(logId: number): Promise<ChatIO> {
   return apiRequest<ChatIO>(`/logs/${logId}/chat-io`);
+}
+
+/**
+ * 删除单条请求日志。
+ *
+ * 后端是硬删除，且会一并删掉这条的 IO 记录——没有回收站，删完就没了。
+ * 调用方必须先让用户确认，不要拿它当"暂时藏起某一行"用。
+ */
+export async function deleteLog(id: number): Promise<void> {
+  await apiRequest<void>(`/logs/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 // Clean logs API

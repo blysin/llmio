@@ -13,6 +13,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// openAIModel 是 OpenAI 兼容 GET /v1/models 里的一条模型。
+//
+// 刻意**不**复用 providers.Model：那个结构同时充当"解析上游 /models 响应"的
+// DTO（providers/openai.go、providers/openai_res.go），还用于管理端的
+// GET /api/providers/models/:id。往它上面挂上下文长度，管理员拉一次上游模型
+// 列表就会跟着冒出一串 0——那是对上游的无声断言，而本意只是给客户端补个字段。
+type openAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+	// ContextLength 与 ContextWindow 是同一个值的两个名字，两个都发是为了
+	// 兼容不同的客户端：它们读的字段名不一致（有的认 context_length，有的认
+	// context_window）。0 表示这个模型没配过，客户端按未知处理。
+	ContextLength int `json:"context_length"`
+	ContextWindow int `json:"context_window"`
+}
+
+type openAIModelList struct {
+	Object string        `json:"object"`
+	Data   []openAIModel `json:"data"`
+}
+
 func OpenAIModelsHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	models, err := service.ModelsByTypes(ctx, consts.StyleOpenAI, consts.StyleOpenAIRes)
@@ -25,16 +48,18 @@ func OpenAIModelsHandler(c *gin.Context) {
 		common.InternalServerError(c, err.Error())
 		return
 	}
-	resModels := make([]providers.Model, 0)
+	resModels := make([]openAIModel, 0, len(models))
 	for _, model := range models {
-		resModels = append(resModels, providers.Model{
-			ID:      model.Name,
-			Object:  "model",
-			Created: model.CreatedAt.Unix(),
-			OwnedBy: "llmio",
+		resModels = append(resModels, openAIModel{
+			ID:            model.Name,
+			Object:        "model",
+			Created:       model.CreatedAt.Unix(),
+			OwnedBy:       "llmio",
+			ContextLength: model.ContextLength,
+			ContextWindow: model.ContextLength,
 		})
 	}
-	common.SuccessRaw(c, providers.ModelList{
+	common.SuccessRaw(c, openAIModelList{
 		Object: "list",
 		Data:   resModels,
 	})

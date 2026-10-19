@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { Pie, PieChart } from "recharts"
+import { Pie, PieChart, type PieLabelRenderProps } from "recharts"
 import {
   Card,
   CardContent,
@@ -15,7 +15,14 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ProjectCount, StatMetric } from "@/lib/api"
+import { compactNumber } from "@/lib/format"
 import { seriesVar } from "@/lib/palette"
+
+// 扇区外的标签是 recharts 的默认 label：直接把该行数值原样印出来。
+// 按 tokens 统计时就是十一位数字，绕着环排一圈既挤又读不出量级，
+// 因此换成 compactNumber（K/M/B）。tooltip 不缩，那里才看精确值。
+const renderSectorLabel = ({ value }: PieLabelRenderProps) =>
+  compactNumber(Number(value))
 
 // 颜色走项目统一色板（palette.ts 的 seriesVar，对应 index.css 的 --series-1..8）。
 // 原先引用的是 shadcn 默认的 --chart-*，本主题从未定义，导致扇区 fill 回落到黑色。
@@ -79,7 +86,7 @@ export function ProjectChartPieDonutText({ data, metric }: ProjectChartPieDonutT
               data={chartData}
               dataKey="value"
               nameKey="project"
-              label
+              label={renderSectorLabel}
               labelLine={false}
               innerRadius={70}
               startAngle={90}

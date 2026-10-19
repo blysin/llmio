@@ -29,7 +29,8 @@ const ProviderModelBarChart = lazy(() => import("@/components/charts/provider-mo
 
 const emptyMetrics = (): MetricsData => ({ reqs: 0, tokens: 0, prompt_tokens: 0, cached_tokens: 0 });
 
-const DEFAULT_METRIC: StatMetric = "count";
+// 默认按 Tokens 统计：这一页的主指标是 token 消耗，次数只是附带读数
+const DEFAULT_METRIC: StatMetric = "tokens";
 const DEFAULT_RANGE: TimelineRange = "today";
 const DEFAULT_MODEL = ""; // 空串 = 全部模型
 

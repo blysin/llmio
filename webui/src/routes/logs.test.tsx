@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import LogsPage from "@/routes/logs"
 import {
+  deleteLog,
   getAuthKeysList,
   getLogs,
   getModelOptions,
@@ -24,6 +25,7 @@ vi.mock("@/lib/api", () => ({
   getAuthKeysList: vi.fn(),
   getProviderTemplates: vi.fn(),
   cleanLogs: vi.fn(),
+  deleteLog: vi.fn(),
 }))
 
 const mocked = {
@@ -32,6 +34,7 @@ const mocked = {
   getModelOptions: vi.mocked(getModelOptions),
   getAuthKeysList: vi.mocked(getAuthKeysList),
   getProviderTemplates: vi.mocked(getProviderTemplates),
+  deleteLog: vi.mocked(deleteLog),
 }
 
 /**
@@ -178,6 +181,75 @@ describe("日志页 · 有数据", () => {
     expect(screen.getByText("deepseek-chat-v3")).toBeInTheDocument()
     expect(screen.getByText("scnet")).toBeInTheDocument()
     expect(screen.getByText("成功")).toBeInTheDocument()
+    expect(screen.queryByText(NO_DATA)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * 单行删除。
+ *
+ * 后端这一步是**硬删除**（连 IO 记录一起），没有回收站，所以界面上的确认框
+ * 不是装饰：行内那一下点下去不能直接发请求，否则误点等于丢数据。
+ *
+ * 注意这一页的表格与移动端卡片在 jsdom 里是**同时**渲染的（Tailwind 的
+ * hidden 类不生效），所以查行内元素一律用 AllBy，别用单数查询。
+ */
+describe("日志页 · 删除单行", () => {
+  /** 渲染出带一行的页面，并返回渲染后的 user */
+  async function renderWithRow() {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findAllByText("deepseek-chat")
+    return user
+  }
+
+  /** 行内删除按钮：桌面表格与移动端卡片各有一份，取第一个即可 */
+  async function clickRowDelete(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getAllByRole("button", { name: "删除日志" })[0])
+  }
+
+  it("先弹确认框，未确认前不发请求；确认后才调删除接口并重新取数", async () => {
+    mocked.deleteLog.mockResolvedValue(undefined)
+    const user = await renderWithRow()
+    const fetchCount = mocked.getLogs.mock.calls.length
+
+    await clickRowDelete(user)
+
+    // 只点了行内按钮：这一步还不该碰服务端
+    expect(mocked.deleteLog).not.toHaveBeenCalled()
+    // 确认框里必须点名删的是哪一条
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("42")
+
+    await user.click(screen.getByRole("button", { name: "确认删除" }))
+
+    await waitFor(() => expect(mocked.deleteLog).toHaveBeenCalledWith(42))
+    // 删完必须重新取一次：不取的话那一行还挂在界面上，看起来像没删掉
+    await waitFor(() => expect(mocked.getLogs.mock.calls.length).toBeGreaterThan(fetchCount))
+  })
+
+  it("取消就什么都不做，行还在", async () => {
+    const user = await renderWithRow()
+    await clickRowDelete(user)
+    await screen.findByRole("alertdialog")
+
+    await user.click(screen.getByRole("button", { name: "取消" }))
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+    expect(mocked.deleteLog).not.toHaveBeenCalled()
+    expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThan(0)
+  })
+
+  it("删除失败要说失败，不能假装删掉了", async () => {
+    mocked.deleteLog.mockRejectedValue(new Error("日志不存在"))
+    const user = await renderWithRow()
+    await clickRowDelete(user)
+    await screen.findByRole("alertdialog")
+
+    await user.click(screen.getByRole("button", { name: "确认删除" }))
+
+    // 行仍在界面上：这一条得留着，别让一次失败的删除看起来成功了
+    await waitFor(() => expect(mocked.deleteLog).toHaveBeenCalled())
+    expect(screen.getAllByText("deepseek-chat").length).toBeGreaterThan(0)
     expect(screen.queryByText(NO_DATA)).not.toBeInTheDocument()
   })
 })

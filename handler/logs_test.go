@@ -29,8 +29,9 @@ func setupLogsHandlerDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	// GetRequestLogs 查完日志还会按 auth_key_id 取一次密钥名，因此这张表也得建
-	if err := db.AutoMigrate(&models.ChatLog{}, &models.AuthKey{}); err != nil {
+	// GetRequestLogs 查完日志还会按 auth_key_id 取一次密钥名，因此这张表也得建；
+	// ChatIO 是删除单条时要一并清掉的表（见 TestDeleteLog）
+	if err := db.AutoMigrate(&models.ChatLog{}, &models.AuthKey{}, &models.ChatIO{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 	seed := []models.ChatLog{
@@ -163,5 +164,83 @@ func TestGetRequestLogsKeyName(t *testing.T) {
 
 	if len(env.Data.Data) != 1 || env.Data.Data[0].KeyName != "生产" {
 		t.Fatalf("应带出密钥名，实得 %+v", env.Data.Data)
+	}
+}
+
+// deleteLogByID 跑一次单条删除接口，返回业务码。
+func deleteLogByID(t *testing.T, id string) int {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/logs/"+id, nil)
+	withPathParam(c, "id", id)
+
+	DeleteLog(c)
+
+	var env struct {
+		Code int `json:"code"`
+	}
+	decodeEnvelope(t, w, &env)
+	return env.Code
+}
+
+// countRow 连软删过的行一起数。DeleteLog 走的是 Unscoped，用默认 Count
+// 会把软删的行漏掉——那样子软删的实现也能"通过"硬删的断言。
+func countRow(t *testing.T, model any, where string, args ...any) int64 {
+	t.Helper()
+	var n int64
+	if err := models.DB.Unscoped().Model(model).Where(where, args...).Count(&n).Error; err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return n
+}
+
+/**
+ * 单条删除是本文件里唯一**动数据**的接口。要钉住的是三件事：
+ * 行真的没了（而且是硬删，不是打个删除标记）、它的 IO 记录一起清掉、
+ * 别人的行不受影响。少其中任何一条，用户的观感都是"点了删除，空间没回来"。
+ */
+func TestDeleteLog(t *testing.T) {
+	setupLogsHandlerDB(t)
+
+	// 给被删的那条挂上 IO：请求体会被压成帧存进表里，软删根本释放不了它
+	if err := models.DB.Create(&models.ChatIO{LogId: 2, OutputUnion: models.OutputUnion{OfString: "resp"}}).Error; err != nil {
+		t.Fatalf("seed chat io: %v", err)
+	}
+
+	if code := deleteLogByID(t, "2"); code != 200 {
+		t.Fatalf("删除应返回业务码 200，实得 %d", code)
+	}
+
+	if n := countRow(t, &models.ChatLog{}, "id = ?", 2); n != 0 {
+		t.Fatalf("日志行应被硬删除（含软删行也算），实得 %d 行", n)
+	}
+	if n := countRow(t, &models.ChatIO{}, "log_id = ?", 2); n != 0 {
+		t.Fatalf("IO 记录应一并删除，实得 %d 行", n)
+	}
+
+	// 删一条就是删一条，不能牵连别的行
+	ids, _ := queryLogIDs(t, "")
+	if !slices.Equal(ids, []uint{1, 3, 4, 5}) {
+		t.Fatalf("删除只应影响目标行，实得 %v", ids)
+	}
+}
+
+func TestDeleteLogErrors(t *testing.T) {
+	setupLogsHandlerDB(t)
+
+	// id 不是数字：400。放进 Where 让 SQLite 隐式转换只会静默删掉 0 行
+	if code := deleteLogByID(t, "abc"); code != http.StatusBadRequest {
+		t.Fatalf("非法 id 应返回业务码 400，实得 %d", code)
+	}
+
+	// 不存在的 id：404。报成功的话界面会弹"已删除"，而这个 id 本来就不在
+	if code := deleteLogByID(t, "999"); code != http.StatusNotFound {
+		t.Fatalf("不存在的日志应返回业务码 404，实得 %d", code)
+	}
+
+	ids, _ := queryLogIDs(t, "")
+	if !slices.Equal(ids, []uint{1, 2, 3, 4, 5}) {
+		t.Fatalf("失败的删除不该动到任何行，实得 %v", ids)
 	}
 }

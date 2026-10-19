@@ -75,6 +75,11 @@ func Init(ctx context.Context, path string) {
 	if _, err := gorm.G[Model](DB).Where("breaker IS NULL").Update(ctx, "breaker", false); err != nil {
 		panic(err)
 	}
+	// 与上一行同一类问题：context_length 是后加的非指针 int，AutoMigrate 不给
+	// 存量行填默认值，留 NULL 会让模型列表扫描 int 时报错。
+	if _, err := gorm.G[Model](DB).Where("context_length IS NULL").Update(ctx, "context_length", 0); err != nil {
+		panic(err)
+	}
 	if _, err := gorm.G[AuthKey](DB).Where("io_log IS NULL").Update(ctx, "io_log", false); err != nil {
 		panic(err)
 	}

@@ -41,6 +41,26 @@ func tpsBase(stream bool, start time.Time, chunkTime time.Duration) time.Duratio
 	return chunkTime
 }
 
+// partialLog 在 processer 出错时回传「已经拿到的部分进度」。
+//
+// 以前出错一律 return nil，而 RecordLog 的错误分支只写 Status/Error 两列，
+// 于是「流到一半才断」在日志上和「一个字节都没收到」长得一模一样。
+// 把 size 与首字耗时交回去，至少能看出断在哪里、流了多少。
+//
+// 首字尚未到达时 firstChunkTime 为 0，此时 chunkTime 保持 0 而不是
+// time.Since(start)：后者会把「还没开始流」伪装成「流了很久」。
+func partialLog(start time.Time, firstChunkTime time.Duration, size int) *models.ChatLog {
+	var chunkTime time.Duration
+	if firstChunkTime > 0 {
+		chunkTime = time.Since(start) - firstChunkTime
+	}
+	return &models.ChatLog{
+		FirstChunkTime: firstChunkTime,
+		ChunkTime:      chunkTime,
+		Size:           size,
+	}
+}
+
 func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.Time) (*models.ChatLog, *models.OutputUnion, error) {
 	// 首字时延
 	var firstChunkTime time.Duration
@@ -69,7 +89,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 		// 流式过程中错误
 		errStr := gjson.Get(chunk, "error")
 		if errStr.Exists() {
-			return nil, nil, errors.New(errStr.String())
+			return partialLog(start, firstChunkTime, size), nil, errors.New(errStr.String())
 		}
 		output.OfStringArray = append(output.OfStringArray, chunk)
 
@@ -84,7 +104,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return partialLog(start, firstChunkTime, size), nil, err
 	}
 
 	// token用量
@@ -92,7 +112,7 @@ func ProcesserOpenAI(ctx context.Context, pr io.Reader, stream bool, start time.
 	usage := []byte(usageStr)
 	if json.Valid(usage) {
 		if err := json.Unmarshal(usage, &openaiUsage); err != nil {
-			return nil, nil, err
+			return partialLog(start, firstChunkTime, size), nil, err
 		}
 	}
 
@@ -163,14 +183,14 @@ func ProcesserOpenAiRes(ctx context.Context, pr io.Reader, stream bool, start ti
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return partialLog(start, firstChunkTime, size), nil, err
 	}
 
 	var openAIResUsage OpenAIResUsage
 	usage := []byte(usageStr)
 	if json.Valid(usage) {
 		if err := json.Unmarshal(usage, &openAIResUsage); err != nil {
-			return nil, nil, err
+			return partialLog(start, firstChunkTime, size), nil, err
 		}
 	}
 
@@ -232,14 +252,14 @@ func ProcesserAnthropic(ctx context.Context, pr io.Reader, stream bool, start ti
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return partialLog(start, firstChunkTime, size), nil, err
 	}
 
 	var anthropicUsage AnthropicUsage
 	usage := []byte(usageStr)
 	if json.Valid(usage) {
 		if err := json.Unmarshal(usage, &anthropicUsage); err != nil {
-			return nil, nil, err
+			return partialLog(start, firstChunkTime, size), nil, err
 		}
 	}
 
@@ -314,7 +334,7 @@ func ProcesserGemini(ctx context.Context, pr io.Reader, stream bool, start time.
 			// 流式过程中错误
 			errStr := gjson.Get(payload, "error")
 			if errStr.Exists() {
-				return nil, nil, errors.New(errStr.String())
+				return partialLog(start, firstChunkTime, size), nil, errors.New(errStr.String())
 			}
 
 			output.OfStringArray = append(output.OfStringArray, payload)
@@ -324,7 +344,7 @@ func ProcesserGemini(ctx context.Context, pr io.Reader, stream bool, start time.
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return nil, nil, err
+			return partialLog(start, firstChunkTime, size), nil, err
 		}
 	}
 

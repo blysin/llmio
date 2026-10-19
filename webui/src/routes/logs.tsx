@@ -14,9 +14,19 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import Loading from "@/components/loading";
-import { getLogs, getProviders, getModelOptions, getAuthKeysList, type ChatLog, type Provider, type Model, type AuthKeyItem, getProviderTemplates, cleanLogs } from "@/lib/api";
+import { getLogs, getProviders, getModelOptions, getAuthKeysList, deleteLog, type ChatLog, type Provider, type Model, type AuthKeyItem, getProviderTemplates, cleanLogs } from "@/lib/api";
 import { ChevronLeft, ChevronRight, RefreshCw, Trash2, Eye, MessageSquare, Search } from "lucide-react";
 
 // 格式化时间显示
@@ -148,6 +158,9 @@ export default function LogsPage() {
   const [cleanValue, setCleanValue] = useState<string>('1000');
   const [isCleanDialogOpen, setIsCleanDialogOpen] = useState(false);
   const [cleanLoading, setCleanLoading] = useState(false);
+  // 单条删除：待确认的那一行，null 表示确认框关着
+  const [pendingDelete, setPendingDelete] = useState<ChatLog | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // 获取数据
   const fetchProviders = async () => {
     try {
@@ -238,6 +251,29 @@ export default function LogsPage() {
   const openDetailDialog = (log: ChatLog) => {
     setSelectedLog(log);
     setIsDialogOpen(true);
+  };
+  // 删除单条：确认框里点"确认删除"才真的发请求
+  const handleDeleteLog = async () => {
+    if (!pendingDelete) return;
+
+    setDeleting(true);
+    try {
+      await deleteLog(pendingDelete.ID);
+      toast.success(t('delete.success', { id: pendingDelete.ID }));
+      setPendingDelete(null);
+      // 删的正好是本页最后一行时，"刷新本页"只会得到一个空表——退一页更有用。
+      // patchParams 改了 page 会自己触发取数，这里不能顺手再 fetch 一次。
+      if (logs.length === 1 && page > 1) {
+        patchParams({ page: page - 1 });
+      } else {
+        fetchLogs();
+      }
+    } catch (error) {
+      console.error("Error deleting log:", error);
+      toast.error(t('delete.failed'));
+    } finally {
+      setDeleting(false);
+    }
   };
   const canViewChatIO = (log: ChatLog) => log.Status === 'success' && log.ChatIO;
   const handleViewChatIO = (log: ChatLog) => {
@@ -468,6 +504,16 @@ export default function LogsPage() {
                             >
                               <MessageSquare className="h-4 w-4" />
                             </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() => setPendingDelete(log)}
+                              aria-label={t('delete.tooltip')}
+                              title={t('delete.tooltip')}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -503,6 +549,16 @@ export default function LogsPage() {
                             disabled={!canViewChatIO(log)}
                           >
                             <MessageSquare className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => setPendingDelete(log)}
+                            aria-label={t('delete.tooltip')}
+                            title={t('delete.tooltip')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </div>
@@ -760,6 +816,35 @@ export default function LogsPage() {
           </div>
         </DialogContent>
       </Dialog>
+      {/* 单条删除确认：三步（本行按钮 → 确认框 → 确认删除）不可省，后端是硬删除 */}
+      <AlertDialog
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('delete.title')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete ? t('delete.description', { id: pendingDelete.ID }) : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setPendingDelete(null)}
+              disabled={deleting}
+            >
+              {t('delete.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteLog}
+              className="bg-destructive hover:bg-destructive/90"
+              disabled={deleting}
+            >
+              {deleting ? t('delete.deleting') : t('delete.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

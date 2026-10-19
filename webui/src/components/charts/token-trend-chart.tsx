@@ -19,6 +19,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { TimelinePoint, TimelineRange } from "@/lib/api"
+import { compactNumber } from "@/lib/format"
 import { seriesVar } from "@/lib/palette"
 
 // 时间维度 -> i18n key。对象键序即下拉展示顺序。
@@ -134,7 +135,7 @@ export function TokenTrendChart({ data, range, onRangeChange, models, model, onM
                 tickLine={false}
                 axisLine={false}
                 width={64}
-                tickFormatter={(value) => Number(value).toLocaleString()}
+                tickFormatter={(value) => compactNumber(Number(value))}
               />
               <ChartTooltip
                 cursor={false}

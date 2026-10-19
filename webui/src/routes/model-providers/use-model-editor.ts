@@ -9,6 +9,8 @@ export const modelEditSchema = z.object({
   remark: z.string(),
   max_retry: z.number().min(0, { message: "重试次数限制不能为负数" }),
   time_out: z.number().min(0, { message: "超时时间不能为负数" }),
+  // 0 = 未设置（后端对外就不声明这个模型的窗口大小），因此只挡负数。
+  context_length: z.number().min(0, { message: "上下文大小不能为负数" }),
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
   prefer_direct: z.boolean(),
@@ -22,6 +24,7 @@ export const emptyModelForm: ModelFormValues = {
   remark: "",
   max_retry: 10,
   time_out: 60,
+  context_length: 0,
   strategy: "lottery",
   breaker: false,
   prefer_direct: true,
@@ -34,6 +37,9 @@ export function toFormValues(model: Model): ModelFormValues {
     remark: model.Remark ?? "",
     max_retry: model.MaxRetry,
     time_out: model.TimeOut,
+    // 老行没有这一列时后端会回填 0，这里再兜一层：undefined 落到 0，
+    // 免得输入框变成 NaN
+    context_length: model.ContextLength ?? 0,
     strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
     breaker: model.Breaker ?? false,
     // 没配过（老模型）按"开"显示：勾子若默认关，用户只是改个备注再保存，
@@ -83,6 +89,7 @@ export function useModelEditor({ onUpdated, onCreated }: Options) {
           remark: values.remark,
           max_retry: values.max_retry,
           time_out: values.time_out,
+          context_length: values.context_length,
           strategy: values.strategy,
           breaker: values.breaker,
           prefer_direct: values.prefer_direct,
@@ -95,6 +102,7 @@ export function useModelEditor({ onUpdated, onCreated }: Options) {
           remark: values.remark,
           max_retry: values.max_retry,
           time_out: values.time_out,
+          context_length: values.context_length,
           strategy: values.strategy,
           breaker: values.breaker,
           prefer_direct: values.prefer_direct,

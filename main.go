@@ -162,6 +162,9 @@ func main() {
 		api.GET("/version", handler.GetVersion)
 		api.GET("/logs", handler.GetRequestLogs)
 		api.GET("/logs/:id/chat-io", handler.GetChatIO)
+		// 单条硬删除（连同 IO 记录）。与 /logs/cleanup 的区别只是"范围"，
+		// 不是一个能撤销的操作——前端必须先弹确认。
+		api.DELETE("/logs/:id", handler.DeleteLog)
 		api.GET("/user-agents", handler.GetUserAgents)
 		api.POST("/logs/cleanup", handler.CleanLogs)
 		api.GET("/logs/cleanup/history", handler.GetCleanupHistory)

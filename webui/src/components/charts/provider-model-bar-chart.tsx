@@ -13,6 +13,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ProviderModelUsage } from "@/lib/api"
+import { compactNumber } from "@/lib/format"
 import { seriesVar } from "@/lib/palette"
 
 // 两组柱子并排：总 Tokens 与缓存 Tokens。
@@ -81,7 +82,7 @@ export function ProviderModelBarChart({ data }: ProviderModelBarChartProps) {
                 type="number"
                 tickLine={false}
                 axisLine={false}
-                tickFormatter={(value) => Number(value).toLocaleString()}
+                tickFormatter={(value) => compactNumber(Number(value))}
               />
               <YAxis
                 type="category"

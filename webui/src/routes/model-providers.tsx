@@ -91,6 +91,8 @@ const modelEditSchema = z.object({
   remark: z.string(),
   max_retry: z.number().min(0, { message: "重试次数限制不能为负数" }),
   time_out: z.number().min(0, { message: "超时时间不能为负数" }),
+  // 0 = 未设置（后端对外就不声明这个模型的窗口大小），因此只挡负数。
+  context_length: z.number().min(0, { message: "上下文大小不能为负数" }),
   strategy: z.enum(["lottery", "rotor"]),
   breaker: z.boolean(),
   prefer_direct: z.boolean(),
@@ -137,6 +139,7 @@ export default function ModelProvidersPage() {
       remark: "",
       max_retry: 10,
       time_out: 60,
+      context_length: 0,
       strategy: "lottery",
       breaker: false,
       prefer_direct: false,
@@ -549,6 +552,7 @@ export default function ModelProvidersPage() {
       remark: model.Remark ?? "",
       max_retry: model.MaxRetry,
       time_out: model.TimeOut,
+      context_length: model.ContextLength ?? 0,
       strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
       breaker: model.Breaker ?? false,
       prefer_direct: model.PreferDirect ?? false,
@@ -563,6 +567,7 @@ export default function ModelProvidersPage() {
       remark: "",
       max_retry: 10,
       time_out: 60,
+      context_length: 0,
       strategy: "lottery",
       breaker: false,
       prefer_direct: false,
@@ -578,6 +583,7 @@ export default function ModelProvidersPage() {
       remark: "",
       max_retry: 10,
       time_out: 60,
+      context_length: 0,
       strategy: "lottery",
       breaker: false,
       prefer_direct: false,
@@ -594,6 +600,7 @@ export default function ModelProvidersPage() {
           remark: values.remark,
           max_retry: values.max_retry,
           time_out: values.time_out,
+          context_length: values.context_length,
           strategy: values.strategy,
           breaker: values.breaker,
         });
@@ -607,6 +614,7 @@ export default function ModelProvidersPage() {
                 Remark: updated.Remark,
                 MaxRetry: updated.MaxRetry,
                 TimeOut: updated.TimeOut,
+                ContextLength: updated.ContextLength,
                 Strategy: updated.Strategy,
                 Breaker: updated.Breaker,
               }
@@ -620,6 +628,7 @@ export default function ModelProvidersPage() {
           remark: values.remark,
           max_retry: values.max_retry,
           time_out: values.time_out,
+          context_length: values.context_length,
           strategy: values.strategy,
           breaker: values.breaker,
           prefer_direct: values.prefer_direct,
@@ -1443,6 +1452,27 @@ export default function ModelProvidersPage() {
                   )}
                 />
               </div>
+
+              <FormField
+                control={modelEditForm.control}
+                name="context_length"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('model_form.context_length')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        {...field}
+                        onChange={(e) => field.onChange(+e.target.value)}
+                      />
+                    </FormControl>
+                    <p className="text-[11px] text-muted-foreground">
+                      {t('model_form.context_length_desc')}
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
               <FormField
                 control={modelEditForm.control}

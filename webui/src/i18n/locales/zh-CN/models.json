@@ -110,6 +110,8 @@
     "remark": "备注",
     "max_retry": "重试次数限制",
     "timeout": "超时时间(秒)",
+    "context_length": "上下文大小 (tokens)",
+    "context_length_desc": "模型的上下文窗口大小，通过 GET /v1/models 对外声明。留空或 0 表示未设置。",
     "io_log": "IO 记录",
     "breaker": "熔断",
     "prefer_direct": "优先匹配相同协议",

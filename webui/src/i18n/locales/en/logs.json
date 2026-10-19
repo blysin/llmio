@@ -20,6 +20,16 @@
     "success": "Cleaned {{count}} log(s)",
     "failed": "Clean failed"
   },
+  "delete": {
+    "tooltip": "Delete log",
+    "title": "Delete Log",
+    "description": "Delete log {{id}}? The log and its recorded input/output will be removed together. This cannot be undone.",
+    "cancel": "Cancel",
+    "confirm": "Confirm Delete",
+    "deleting": "Deleting...",
+    "success": "Deleted log {{id}}",
+    "failed": "Delete failed"
+  },
   "filters": {
     "model": "Model",
     "model_placeholder": "Select model",
