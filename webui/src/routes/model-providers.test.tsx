@@ -658,9 +658,12 @@ describe("关联表单 · 峰谷条款", () => {
     const rows = within(within(dialog).getByRole("list", { name: "时段列表" })).getAllByRole(
       "listitem"
     )
-    expect(rows).toHaveLength(2)
-    expect(within(rows[1]).getByLabelText("名称")).toHaveValue("夜间优惠")
-    expect(within(rows[1]).getByLabelText("价格系数")).toHaveValue(0.25)
+    // DeepSeek 现行峰谷方案模板：两个峰时窗 ×2 + 谷时兜底 ×1
+    expect(rows).toHaveLength(3)
+    expect(within(rows[0]).getByLabelText("名称")).toHaveValue("峰时·上午")
+    expect(within(rows[0]).getByLabelText("价格系数")).toHaveValue(2)
+    expect(within(rows[2]).getByLabelText("名称")).toHaveValue("谷时")
+    expect(within(rows[2]).getByLabelText("价格系数")).toHaveValue(1)
   })
 
   it("已配置的关联回填条款，开关、时刻、乘数、星期都在", async () => {
@@ -1056,5 +1059,23 @@ describe("关联表单 · 自动填写换目标", () => {
     await waitFor(() => expect(价格(dialog, "output_price")).toBe("3.2"))
     expect(价格(dialog, "input_price")).toBe("1")
     expect(视觉(dialog)).not.toBeChecked()
+  })
+})
+
+describe("关联表单 · 备用关联", () => {
+  it("新建关联默认不是备用", async () => {
+    const { dialog } = await openAssociationDialog("gpt-4o")
+
+    expect(within(dialog).getByRole("checkbox", { name: "备用关联" })).not.toBeChecked()
+  })
+
+  it("编辑备用关联时开关回填为开", async () => {
+    mocked.getModelProviders.mockResolvedValue([
+      association({ ProviderModel: "gpt-4o", Backup: true }),
+    ])
+
+    const { dialog } = await openAssociationDialog("gpt-4o")
+
+    expect(within(dialog).getByRole("checkbox", { name: "备用关联" })).toBeChecked()
   })
 })

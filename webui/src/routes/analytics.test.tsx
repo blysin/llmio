@@ -89,13 +89,14 @@ function fixture(over: Partial<StatsResult> = {}): StatsResult {
       avgRetries: 0.2,
     },
     trend: [
-      { ts: 1_759_980_000_000, total: 6, success: 6, error: 0, running: 0, tokens: 900, prompt: 600, completion: 300, cached: 150, avgTps: 40, avgFirstChunkMs: 1200 },
-      { ts: 1_759_981_800_000, total: 4, success: 3, error: 1, running: 0, tokens: 600, prompt: 400, completion: 200, cached: 100, avgTps: 40, avgFirstChunkMs: 1200 },
+      { ts: 1_759_980_000_000, total: 6, success: 6, error: 0, running: 0, tokens: 900, prompt: 600, completion: 300, cached: 150, cost: 0.08, avgTps: 40, avgFirstChunkMs: 1200 },
+      { ts: 1_759_981_800_000, total: 4, success: 3, error: 1, running: 0, tokens: 600, prompt: 400, completion: 200, cached: 100, cost: 0.04, avgTps: 40, avgFirstChunkMs: 1200 },
     ],
     byModel: [group("gpt-test")],
     // 联合维度默认留空：它的形状与 byModel 不同（行名是「请求名 · 提供商」），
     // 与其在这里编一份可能被误当成真数据的，不如让要它的用例自己给
     byModelProvider: [],
+    byProviderModel: [],
     byProvider: [group("prov-a"), group("prov-b")],
     byKey: [group("admin"), group("dev-key")],
     byName: [group("dev")],
@@ -111,8 +112,8 @@ function fixture(over: Partial<StatsResult> = {}): StatsResult {
       },
     ],
     errorTrend: [
-      { ts: 1_759_980_000_000, total: 0, success: 0, error: 0, running: 0, tokens: 0, prompt: 0, completion: 0, cached: 0, avgTps: 0, avgFirstChunkMs: 0 },
-      { ts: 1_759_981_800_000, total: 1, success: 0, error: 1, running: 0, tokens: 0, prompt: 0, completion: 0, cached: 0, avgTps: 0, avgFirstChunkMs: 0 },
+      { ts: 1_759_980_000_000, total: 0, success: 0, error: 0, running: 0, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, avgTps: 0, avgFirstChunkMs: 0 },
+      { ts: 1_759_981_800_000, total: 1, success: 0, error: 1, running: 0, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, avgTps: 0, avgFirstChunkMs: 0 },
     ],
     latency: {
       firstChunk: { p50: 1, p90: 2, p95: 3, p99: 4, avg: 1.5, max: 5, list: [1, 1.2, 2, 3, 5] },
@@ -287,11 +288,31 @@ describe("分析页 · 有数据", () => {
     expect(screen.getByText("Token 趋势")).toBeInTheDocument()
   })
 
+  it("成本趋势面板带快照计价说明与合计", async () => {
+    renderPage()
+
+    expect(await screen.findByText("成本趋势")).toBeInTheDocument()
+    expect(screen.getByText(/按请求时的价格快照累计/)).toBeInTheDocument()
+    // KPI cost=0.12 USD → formatCost 四位小数（note 是整段文本，用子串匹配）
+    expect(screen.getByText(/\$0\.1200/)).toBeInTheDocument()
+  })
+
   it("截断时明确告知数字可能不完整", async () => {
     mocked.getStats.mockResolvedValue(fixture({ truncated: true }))
     renderPage()
 
     expect(await screen.findByText(/掃描已達上限|扫描已达上限/)).toBeInTheDocument()
+  })
+
+  it("下钻表带 Token 列：精确千分位，悬浮给出输入/输出构成", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText("请求趋势")
+
+    await user.click(screen.getByRole("radio", { name: "下钻" }))
+    // fixture 的 group() 默认 totalTokens=1500、prompt=1000、completion=500
+    const cell = await screen.findByTitle("输入 1,000 / 输出 500")
+    expect(cell).toHaveTextContent("1,500")
   })
 
   it("下钻：点名称即按该值筛选，再次点击取消", async () => {
@@ -574,5 +595,61 @@ describe("分析页 · 在同一请求名的各家提供商之间比", () => {
     // 切换器不能跟着消失，否则切进来就出不去了
     expect(screen.getByRole("radio", { name: "模型" })).toBeInTheDocument()
     expect(screen.getByRole("radio", { name: "请求名 × 提供商" })).toBeInTheDocument()
+  })
+})
+
+describe("分析页 · 提供商×模型联合用量", () => {
+  /** 一行「上游模型 · 提供商」。分量字段按内容装：model=上游模型，provider=提供商。 */
+  function pm(model: string, provider: string, over: Partial<GroupStat> = {}): GroupStat {
+    return group(`${model} · ${provider}`, { model, provider, ...over })
+  }
+
+  async function openProviderModel() {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText("请求趋势")
+    await user.click(screen.getByRole("radio", { name: "模型性能" }))
+    await user.click(screen.getByRole("radio", { name: "提供商 × 模型" }))
+    return user
+  }
+
+  it("同一提供商的各个上游模型挨在一起，提供商名升成组头", async () => {
+    // prov-a 跑两个模型、prov-b 只跑一个：「A × B」的 A 当组头、B 当行
+    mocked.getStats.mockResolvedValue(
+      fixture({
+        byProviderModel: [
+          pm("gpt-4o", "prov-a", { total: 6, cost: 1.2 }),
+          pm("gpt-4o", "prov-b", { total: 2, cost: 0.4 }),
+          pm("claude-sonnet", "prov-a", { total: 4, cost: 0.8 }),
+        ],
+      })
+    )
+    await openProviderModel()
+
+    const rows = bodyRows()
+    // 组头 prov-a + 它的两个模型 + 组头 prov-b + 它的一个模型
+    expect(rows).toHaveLength(5)
+    expect(rows[0]).toContain("prov-a")
+    expect(rows[1]).toContain("gpt-4o")
+    expect(rows[2]).toContain("claude-sonnet")
+    expect(rows[3]).toContain("prov-b")
+    expect(rows[4]).toContain("gpt-4o")
+    expect(screen.getByRole("rowheader", { name: "prov-a" })).toBeInTheDocument()
+  })
+
+  it("首列表头是模型（行那一侧），提供商维度平铺不受影响", async () => {
+    mocked.getStats.mockResolvedValue(
+      fixture({ byProviderModel: [pm("m1", "prov-a", { total: 3 })] })
+    )
+    const user = await openProviderModel()
+
+    // 组头升去了分组行，首列装的是模型名
+    expect(screen.getByRole("columnheader", { name: "模型" })).toBeInTheDocument()
+    expect(screen.getByRole("rowheader", { name: "prov-a" })).toBeInTheDocument()
+
+    // 切回提供商边际维度：仍是平铺行，没有组头
+    await user.click(screen.getByRole("radio", { name: "提供商" }))
+    expect(bodyRows().length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByRole("rowheader")).not.toBeInTheDocument()
   })
 })

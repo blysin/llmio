@@ -79,7 +79,8 @@ export const LOG_COLUMNS: readonly LogColumn[] = [
   { id: "model", labelKey: "table.model", defaultVisible: true, cellClass: "max-w-[140px] truncate text-xs", value: (l) => l.ProviderModel },
   { id: "type", labelKey: "table.type", defaultVisible: true, cellClass: "text-xs", value: (l) => l.Style },
   { id: "provider", labelKey: "table.provider", defaultVisible: true, cellClass: "max-w-[120px] truncate text-xs", value: (l) => l.ProviderName },
-  // 主/备用关联：主关联在本请求内全部失败出局后才由备用接管（见 service/chat.go 的分池逻辑）
+  // 主/备用关联：主关联在本请求内全部失败出局后才由备用接管（见 service/chat.go 的分池逻辑）。
+  // 默认隐藏：绝大多数请求都是主关联，开着的列只在排查降级时有意义。
   { id: "role", labelKey: "table.role", kind: "role", cellClass: "text-xs" },
   { id: "actions", labelKey: "table.actions", always: true, headClass: "w-24" },
   // ── 候选列（已入库、默认隐藏）──

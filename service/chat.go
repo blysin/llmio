@@ -120,8 +120,9 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 	providerMap := providersWithMeta.ProviderMap
 
-	// 收集重试过程中的err日志
-	retryLog := make(chan retryLogEntry, providersWithMeta.MaxRetry)
+	// 收集重试过程中的err日志。容量按"每轮最多 1+MaxDrops 条"放大：自愈内层
+	// 每次失败也走 fail 推一条，通道打满会阻塞转发路径。
+	retryLog := make(chan retryLogEntry, providersWithMeta.MaxRetry*(1+SelfHealMaxDrops))
 	defer close(retryLog)
 
 	go RecordRetryLog(context.Background(), retryLog)
@@ -188,7 +189,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		select {
 		case <-ctx.Done():
 			// 走到这里说明请求 context 已经取消：客户端断开，或中间代理掐了连接。
-			// 裸的 ctx.Err() 只有一个 "context canceled"，打上阶段再往上抛。
+			// 裸的 ctx.Err() 只有一句 "context canceled"，打上阶段再往上抛。
 			return nil, nil, MarkStage(StageUpstreamRequest, ctx, ctx.Err())
 		case <-timer.C:
 			return nil, nil, errors.New("retry time out")
@@ -206,17 +207,11 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			// 加权负载均衡
 			id, err := balancer.Pop()
 			if err != nil {
-				// 池子提前清空时把上一轮的真实原因一并带出，避免被误读成「没有配置关联模型」
-				var popErr error
-				if lastErr != nil {
-					popErr = fmt.Errorf("balancer pop err: %v, last error: %w, traceID: %s%s", err, lastErr, traceID, backupHint())
-				} else {
-					popErr = fmt.Errorf("balancer pop err: %v, traceID: %s%s", err, traceID, backupHint())
-				}
-				if _, lerr := saveFailedLog(ctx, style, before, popErr.Error()); lerr != nil {
+				msg := fmt.Sprintf("balancer pop err: %v, traceID: %s%s", err, traceID, lastErrorSuffix(lastErr)+backupHint())
+				if _, lerr := saveFailedLog(ctx, style, before, msg); lerr != nil {
 					slog.Error("save failed log error", "error", lerr)
 				}
-				return nil, nil, popErr
+				return nil, nil, errors.New(msg)
 			}
 
 			modelWithProvider, ok := providersWithMeta.ModelWithProviderMap[id]
@@ -275,10 +270,12 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			}
 			// 这次尝试失败的记录。记账要在这里快照：下一次尝试开头会把盒子清空，
 			// 而"这一家失败时我们丢了什么"正是排查重试时要看的东西。
-			// lastErr 顺带记下本轮真实原因，供轮次耗尽时兜底。
+			// lastErr 一并收下：全部尝试耗尽后客户端只拿得到一句 "All retry failed"，
+			// 真实原因（预检拒绝的原文、上游的 400 报文）必须跟着透出去，否则排查
+			// 只能进库里翻 chat_logs.error。
 			fail := func(err error) {
-				log.BridgeNotes = bridgeNotes.String()
 				lastErr = err
+				log.BridgeNotes = bridgeNotes.String()
 				retryLog <- retryLogEntry{Log: log.WithError(err), Raw: before.raw}
 			}
 
@@ -330,30 +327,95 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				continue
 			}
 
-			req, err := chatModel.BuildReq(ctx, headers, modelWithProvider.ProviderModel, rawBody)
-			if err != nil {
-				fail(err)
-				// 构建请求失败 移除待选
-				balancer.Delete(id)
-				continue
+			// ---- 内层自愈闭环（计划 §3.5）：上游点名"不认识的参数"时，从实发
+			// 请求体删掉该参数、同一家立即重发。改的是实发字节，不重跑翻译与
+			// extra_body（同一家上游的翻译产物是确定的）；drops 随本轮外层迭代
+			// 生命周期，不跨家携带——A 家不收的参数 B 家可能收，每家用一次 400
+			// 换判据，代价可接受。自愈成功不触发 Delete，不污染熔断计数。
+			selfHeal := GetSelfHealPolicy(ctx)
+			maxDrops := selfHeal.MaxDrops
+			if maxDrops <= 0 {
+				maxDrops = SelfHealMaxDrops
 			}
+			drops := map[string]bool{}
+			healed := 0
+			downgraded := false
 
-			res, err := client.Do(req)
-			if err != nil {
-				// client.Do 失败常常是裸的 "context canceled"：客户端一断开，绑定在
-				// 请求 ctx 上的上游调用会被一并取消。打上阶段与归因后再落库，
-				// 否则日志里只剩下六个字母，看不出是客户端跑了还是上游没连上。
-				fail(MarkStage(StageUpstreamRequest, ctx, err))
-				// 请求失败 移除待选
-				balancer.Delete(id)
-				continue
-			}
-
-			if res.StatusCode != http.StatusOK {
-				byteBody, err := io.ReadAll(res.Body)
-				if err != nil {
-					slog.Error("read body error", "error", err)
+			var res *http.Response
+			nextProvider := false // 跳出内层后是否换下一家
+			for {
+				// 自愈的多发也受总超时约束：timer 是全请求预算
+				select {
+				case <-ctx.Done():
+					return nil, nil, MarkStage(StageUpstreamRequest, ctx, ctx.Err())
+				case <-timer.C:
+					return nil, nil, errors.New("retry time out")
+				default:
 				}
+
+				// 每次都重建请求：删参改的是 rawBody，BuildReq 必须带着新字节重打
+				req, err := chatModel.BuildReq(ctx, headers, modelWithProvider.ProviderModel, rawBody)
+				if err != nil {
+					fail(err)
+					// 构建请求失败 移除待选
+					balancer.Delete(id)
+					nextProvider = true
+					break
+				}
+
+				res, err = client.Do(req)
+				if err != nil {
+					// client.Do 失败常常是裸的 "context canceled"：客户端一断开，绑定在
+					// 请求 ctx 上的上游调用会被一并取消。打上阶段与归因后再落库，
+					// 否则日志里只剩下六个字母，看不出是客户端跑了还是上游没连上。
+					fail(MarkStage(StageUpstreamRequest, ctx, err))
+					// 请求失败 移除待选
+					balancer.Delete(id)
+					nextProvider = true
+					break
+				}
+
+				if res.StatusCode == http.StatusOK {
+					break
+				}
+
+				byteBody, rerr := io.ReadAll(res.Body)
+				res.Body.Close()
+				if rerr != nil {
+					slog.Error("read body error", "error", rerr)
+				}
+
+				// 自愈判定：判据三层全过（状态码 + 短语提取 + 四道闸）才删参
+				if selfHeal.Enabled && healed < maxDrops && healableStatusCodes[res.StatusCode] {
+					if path, ok := DetectParamComplaint(res.StatusCode, byteBody); ok && PlanDrop(rawBody, path, drops) {
+						drops[path] = true
+						healed++
+						rawBody = ApplyDrop(rawBody, path)
+						bridgeNotes.record([]bridge.Note{bridge.Note(SelfHealNotePrefix + path)})
+						// 自愈也是一次真实上游调用，失败行与最终成功行都如实计数
+						log.Retry = retry + healed
+						fail(fmt.Errorf("status: %d, body: %s (self-heal: dropped %s)", res.StatusCode, string(byteBody), path))
+						continue
+					}
+				}
+
+				// 工具内容数组的运行时降级：搬运过去的块数组被上游以类型错点名时，
+				// 压回纯文本（丢图、留文本）重发。与删参同一认识论——先发完整形状，
+				// 被点名拒收才降级且留痕；一条独立于删参预算（每家最多一次）
+				if selfHeal.Enabled && !downgraded && healableStatusCodes[res.StatusCode] &&
+					toolContentArrayPattern.MatchString(complaintText(byteBody)) {
+					if next, droppedImgs := FlattenToolContent(rawBody); droppedImgs >= 0 && !bytes.Equal(next, rawBody) {
+						downgraded = true
+						rawBody = next
+						if droppedImgs > 0 {
+							bridgeNotes.record([]bridge.Note{bridge.NoteDroppedToolResultImage})
+						}
+						log.Retry = retry + healed + 1
+						fail(fmt.Errorf("status: %d, body: %s (downgrade: tool content to text, %d image(s) dropped)", res.StatusCode, string(byteBody), droppedImgs))
+						continue
+					}
+				}
+
 				fail(fmt.Errorf("status: %d, body: %s", res.StatusCode, string(byteBody)))
 
 				if res.StatusCode == http.StatusTooManyRequests {
@@ -363,7 +425,11 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 					// 非RPM限制 移除待选
 					balancer.Delete(id)
 				}
-				res.Body.Close()
+				res = nil
+				nextProvider = true
+				break
+			}
+			if nextProvider {
 				continue
 			}
 
@@ -408,10 +474,17 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		}
 	}
 
-	if lastErr != nil {
-		return nil, nil, fmt.Errorf("All retry failed: %w, trace ID: %s%s", lastErr, traceID, backupHint())
+	return nil, nil, fmt.Errorf("All retry failed, trace ID: %s%s", traceID, lastErrorSuffix(lastErr)+backupHint())
+}
+
+// lastErrorSuffix 把最后一次失败的原因拼进收尾错误。截断 500 字符，与
+// ClassifyError 对 raw 的截断同款——错误体可能是整份上游报文，不截会爆破
+// 客户端的 500 响应。没有失败过（首轮就池空）时返回空串。
+func lastErrorSuffix(lastErr error) string {
+	if lastErr == nil {
+		return ""
 	}
-	return nil, nil, fmt.Errorf("All retry failed, trace ID: %s%s", traceID, backupHint())
+	return ", last error: " + Truncate(lastErr.Error(), 500)
 }
 
 func buildUpstreamBody(raw []byte, extraBody map[string]any) ([]byte, error) {
@@ -504,7 +577,9 @@ func RecordLog(ctx context.Context, reqStart time.Time, reader io.ReadCloser, pr
 		// 兜底只试一次——前面已经撞满三次 busy_timeout，再久只会拖住这个 goroutine。
 		fallback := models.ChatLog{
 			Status: consts.StatusError,
-			Error:  "记录日志失败：请求已完成，但状态写入数据库时撞锁（" + err.Error() + "）",
+			// 落库失败也是一类失败，标上阶段让日志页能和上游/流错误分开。
+			Error: MarkStage(StageLogPersist, ctx,
+				fmt.Errorf("记录日志失败：请求已完成，但状态写入数据库时撞锁（%s）", err.Error())).Error(),
 		}
 		if uerr := updateChatLogN(ctx, logId, fallback, 1); uerr != nil {
 			slog.Error("record log error（日志仍停在 running，等重启收尾）", "log_id", logId, "error", uerr)

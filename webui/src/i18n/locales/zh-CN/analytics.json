@@ -51,7 +51,9 @@
     "requests": "请求趋势",
     "requests_note": "共 {{total}} 次，成功 {{success}} · 失败 {{error}} · 在途 {{running}}",
     "tokens": "Token 趋势",
-    "tokens_note": "输入 {{prompt}} · 输出 {{completion}}，其中命中缓存 {{cached}}"
+    "tokens_note": "输入 {{prompt}} · 输出 {{completion}}，其中命中缓存 {{cached}}",
+    "cost": "成本趋势",
+    "cost_note": "按请求时的价格快照累计"
   },
   "breakdown": {
     "dimension_label": "下钻维度",
@@ -75,6 +77,8 @@
       "avg_first_chunk": "平均首包",
       "p95_first_chunk": "P95 首包",
       "cache_hit": "缓存命中",
+      "tokens": "Token",
+      "tokens_title": "输入 {{prompt}} / 输出 {{completion}}",
       "retries": "重试",
       "avg_proxy": "平均代理"
     }
@@ -120,11 +124,13 @@
     "title": "模型性能",
     "note": "点列头排序，再点一次换方向。没有成功样本的模型（TPS 或首包为 0）始终排在最后，不会被当成最快。",
     "note_joint": "同一个请求名的各家提供商归在一组。点列头在各组内排序，组的先后始终按请求数——这样换维度时「第一名的请求名」不会换人。",
+    "note_joint_provider_model": "同一家提供商的各个上游模型归在一组。两个边际分布各抹平一半，只有这里对得上「哪家提供商的哪个上游模型在吃 token」。",
     "dimension_label": "行按什么维度摆",
     "dimensions": {
       "model": "模型",
       "provider": "提供商",
-      "modelProvider": "请求名 × 提供商"
+      "modelProvider": "请求名 × 提供商",
+      "providerModel": "提供商 × 模型"
     },
     "empty": "所选范围内没有模型数据",
     "sort": {

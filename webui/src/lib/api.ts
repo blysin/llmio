@@ -61,6 +61,9 @@ export interface ModelWithProvider {
   StructuredOutput: boolean;
   Image: boolean;
   WithHeader: boolean;
+  /** 是否为备用关联：不参与日常轮询，仅当主关联在本请求内全部不可用后接管。
+   *  老接口快照可能没有该键，按 false 处理。 */
+  Backup?: boolean | null;
   CustomerHeaders: Record<string, string> | null;
   ExtraBody: Record<string, unknown> | null;
   Status: boolean | null;
@@ -71,8 +74,6 @@ export interface ModelWithProvider {
   Currency: string;
   /** 这一条关联自己的峰谷条款；null = 没配（按基础价计费）。 */
   Peak: PeakTerms | null;
-  /** 是否为压缩归档后的备份记录 */
-  Backup?: boolean;
 }
 
 export interface PaginatedResponse<T> {
@@ -516,6 +517,8 @@ export interface TrendPoint {
   completion: number;
   /** prompt 中命中缓存的部分，供 Token 构成图拆出"非缓存输入" */
   cached: number;
+  /** 桶成本，口径同 kpi.cost（三档价快照计价），单位由 kpi.currency 决定 */
+  cost: number;
   avgTps: number;
   avgFirstChunkMs: number;
 }
@@ -523,10 +526,11 @@ export interface TrendPoint {
 export interface GroupStat {
   name: string;
   /**
-   * 模型名与上游名，**只在 `byModelProvider` 这一维有值**。
-   *
-   * 行名（`name`）是拼好的「模型 · 上游」，但表格要按模型把上游归成一组，
-   * 拿拼好的字符串去拆是不行的：模型名里本身就可能带分隔符。
+   * 联合维度（`byModelProvider` / `byProviderModel`）的分量字段，**按内容命名**：
+   * `provider` 一律装提供商名；`model` 装模型一侧——`byModelProvider` 里是
+   * 请求名（历史契约），`byProviderModel` 里是上游模型名。其余维度留空。
+   * 行名（`name`）是两个分量的拼接，但表格归组不能拿拼好的字符串去拆：
+   * 分量名里本身就可能带分隔符。
    */
   model?: string;
   provider?: string;
@@ -605,6 +609,9 @@ export interface StatsResult {
   byProvider: GroupStat[];
   /** 模型×上游的联合分布。两个边际分布推不出它来，见 service/stats.go。 */
   byModelProvider: GroupStat[];
+  /** 提供商 × 上游模型的联合分布："哪家提供商的哪个模型在吃 token"。
+   *  JSON 字段名沿用后端契约（byProviderModel），不随展示叫法变。 */
+  byProviderModel: GroupStat[];
   byKey: GroupStat[];
   byName: GroupStat[];
   byUa: GroupStat[];
@@ -764,6 +771,9 @@ export interface ChatLog {
   ChunkTime: number;
   Tps: number;
   ChatIO: boolean;
+  // 本次响应是否由备用关联提供：主关联在本请求内全部失败出局后降级接管
+  // （见 service/chat.go 的分池逻辑）。老行（回填前）后端也给 false。
+  Backup?: boolean;
   Size: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -774,8 +784,6 @@ export interface ChatLog {
   cache_read_price: number;
   output_price: number;
   currency: string;
-  /** 是否为压缩归档后的备份记录 */
-  Backup?: boolean;
 }
 
 export interface PromptTokensDetails {

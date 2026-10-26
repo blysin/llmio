@@ -262,6 +262,14 @@ func TestClassifyError(t *testing.T) {
 		{name: "重试耗尽", in: `All retry failed, trace ID: abc123`, wantCode: "exhausted", wantType: "重试耗尽"},
 		{name: "业务错误样本", in: `response matched provider error sample "quota"`, wantCode: "upstream-body", wantType: "上游业务错误"},
 		{name: "超时", in: `context deadline exceeded`, wantCode: "timeout", wantType: "超时"},
+		// 客户端断开必须排在"重试耗尽"之前：cancel 收尾的错误常带 All retry failed
+		// 外壳，根因是对端先跑了，不能归成重试耗尽
+		{name: "客户端断开（裸 cancel）", in: `context canceled`, wantCode: "client-cancel", wantType: "客户端断开"},
+		{name: "客户端断开（英式拼写）", in: `context cancelled`, wantCode: "client-cancel", wantType: "客户端断开"},
+		{name: "客户端断开压过重试耗尽外壳", in: `All retry failed: context canceled, trace ID: abc123`, wantCode: "client-cancel", wantType: "客户端断开"},
+		{name: "客户端断开（P2 新文案）", in: `[response_stream] canceled by client or intermediary proxy`, wantCode: "client-cancel", wantType: "客户端断开"},
+		// 防串位：deadline 类错误不含 cancel 串，仍归超时
+		{name: "超时不被断开规则抢走", in: `context deadline exceeded while awaiting headers`, wantCode: "timeout", wantType: "超时"},
 		{name: "超时（timed out）", in: `request timed out`, wantCode: "timeout", wantType: "超时"},
 		{name: "超时（timeout 通用）", in: `i/o timeout`, wantCode: "timeout", wantType: "超时"},
 		// 拨号超时同时含"网络"与"超时"特征，必须归为超时（顺序保证）
@@ -638,7 +646,7 @@ func TestAggregateEmptyInput(t *testing.T) {
 	}
 	// 所有集合都必须是非 nil 的空切片，保证 JSON 序列化为 [] 而不是 null
 	if res.Trend == nil || res.ByModel == nil || res.ByProvider == nil ||
-		res.ByModelProvider == nil ||
+		res.ByModelProvider == nil || res.ByProviderModel == nil ||
 		res.ByKey == nil || res.ByName == nil || res.ByUserAgent == nil ||
 		res.Errors == nil || res.ErrorTrend == nil ||
 		res.TopTps == nil || res.Slowest == nil || res.RecentError == nil {
@@ -708,10 +716,43 @@ func TestAggregateTrendBuckets(t *testing.T) {
 	if res.Trend[1].Total != 0 || res.Trend[1].Tokens != 0 {
 		t.Fatalf("中间桶应为空：%+v", res.Trend[1])
 	}
+	// 空桶以零值构造，Cost 同样应为 0
+	if res.Trend[1].Cost != 0 {
+		t.Fatalf("空桶 Cost 应为 0，实得 %v", res.Trend[1].Cost)
+	}
 
 	// 末桶
 	if res.Trend[2].Total != 1 || res.Trend[2].Success != 1 {
 		t.Fatalf("桶 3 计数不符：%+v", res.Trend[2])
+	}
+}
+
+// TestAggregateTrendCostPinnedByThreeTierPricing 钉死"桶成本按费用计"的口径：
+// 非缓存输入 × input_price + 缓存读 × cache_read_price + 输出 × output_price，
+// 除以 1e6。曾经 dashboard 原实现把 Σ单价 当成本，量纲错误——这条用例防它回潮。
+func TestAggregateTrendCostPinnedByThreeTierPricing(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	l := logAt(1, base, consts.StatusSuccess)
+	l.PromptTokens = 1000
+	l.PromptTokensDetails = models.PromptTokensDetails{CachedTokens: 400}
+	l.CompletionTokens = 200
+	l.InputPrice = 3
+	l.CacheReadPrice = 0.3
+	l.OutputPrice = 15
+
+	res := AggregateWithBucket([]models.ChatLog{l}, StatsFilter{}, time.Hour)
+	if len(res.Trend) != 1 {
+		t.Fatalf("应只有 1 个桶，实得 %d", len(res.Trend))
+	}
+	want := (600*3 + 400*0.3 + 200*15) / 1e6 // = 0.00522
+	if diff := res.Trend[0].Cost - want; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("桶 Cost 应为 %v（三档计价），实得 %v", want, res.Trend[0].Cost)
+	}
+	// 币种在 KPI 层，桶内不带
+	if res.KPI.Currency != "CNY" {
+		t.Fatalf("KPI.Currency 应为 CNY，实得 %q", res.KPI.Currency)
 	}
 }
 
@@ -878,6 +919,87 @@ func TestAggregateByNameProvider(t *testing.T) {
 	}, StatsFilter{}, time.Hour)
 	if len(reRouted.ByModelProvider) != 1 || reRouted.ByModelProvider[0].Total != 2 {
 		t.Fatalf("同一请求名下的不同上游模型应合为一行：%+v", reRouted.ByModelProvider)
+	}
+}
+
+// 供应商×上游模型的联合分布：两个边际各自抹平另一半，只有联合看得清
+// "哪家供应商的哪个上游模型在吃 token"。
+func TestAggregateByProviderModel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	mk := func(providerModel, provider string, total int64) models.ChatLog {
+		l := logAt(1, base, consts.StatusSuccess)
+		l.ProviderModel, l.ProviderName = providerModel, provider
+		l.TotalTokens = total
+		l.PromptTokens = total
+		return l
+	}
+
+	logs := []models.ChatLog{
+		// 同一家供应商的两个上游模型：按模型要拆成两行
+		mk("gpt-4o", "openai", 10),
+		mk("gpt-4o-mini", "openai", 20),
+		// 同一个上游模型经由两家供应商：按供应商要拆成两行
+		mk("claude-sonnet", "anthropic", 40),
+		mk("claude-sonnet", "proxy-a", 80),
+	}
+	res := AggregateWithBucket(logs, StatsFilter{}, time.Hour)
+
+	if len(res.ByProviderModel) != 4 {
+		t.Fatalf("应有 4 行，实得 %d：%+v", len(res.ByProviderModel), res.ByProviderModel)
+	}
+	byKey := map[string]GroupStat{}
+	for _, g := range res.ByProviderModel {
+		byKey[g.Model+"|"+g.Provider] = g
+	}
+	// 分量字段必须原样保留：前端要按上游模型把各家供应商归成一组
+	joint, ok := byKey["claude-sonnet|anthropic"]
+	if !ok {
+		t.Fatalf("缺少 claude-sonnet×anthropic：%+v", res.ByProviderModel)
+	}
+	if joint.Name != "claude-sonnet · anthropic" {
+		t.Fatalf("行名应为「上游模型 · 提供商」，实得 %q", joint.Name)
+	}
+	if joint.Total != 1 || joint.TotalTokens != 40 {
+		t.Fatalf("claude-sonnet×anthropic 应为 1 条 40 tokens，实得 %+v", joint)
+	}
+	if byKey["claude-sonnet|proxy-a"].TotalTokens != 80 {
+		t.Fatalf("claude-sonnet×proxy-a 不符：%+v", byKey["claude-sonnet|proxy-a"])
+	}
+
+	// 边际一致性：联合分布按任一分量求和，必须等于对应的边际分布。
+	// 对不上就是分桶串了行，下钻对账会少数。
+	marginalTotals := func(groups []GroupStat) map[string]int64 {
+		out := map[string]int64{}
+		for _, g := range groups {
+			out[g.Name] += g.TotalTokens
+		}
+		return out
+	}
+	sumByModel := map[string]int64{}
+	for _, g := range res.ByProviderModel {
+		sumByModel[g.Model] += g.TotalTokens
+	}
+	for name, want := range marginalTotals(res.ByModel) {
+		if sumByModel[name] != want {
+			t.Fatalf("按模型求和与 byModel 不一致：%s 联合=%d 边际=%d", name, sumByModel[name], want)
+		}
+	}
+	sumByProvider := map[string]int64{}
+	for _, g := range res.ByProviderModel {
+		sumByProvider[g.Provider] += g.TotalTokens
+	}
+	for name, want := range marginalTotals(res.ByProvider) {
+		if sumByProvider[name] != want {
+			t.Fatalf("按供应商求和与 byProvider 不一致：%s 联合=%d 边际=%d", name, sumByProvider[name], want)
+		}
+	}
+
+	// provider_name 为空的行归 "-"：与其它分组的兜底一致，不能凭空丢行
+	blank := AggregateWithBucket([]models.ChatLog{mk("m1", "", 5)}, StatsFilter{}, time.Hour)
+	if len(blank.ByProviderModel) != 1 || blank.ByProviderModel[0].Provider != "-" {
+		t.Fatalf("空供应商应归 \"-\"：%+v", blank.ByProviderModel)
 	}
 }
 
