@@ -44,7 +44,8 @@
     "breakdown": "下钻",
     "latency": "延迟",
     "errors": "错误",
-    "models": "模型性能"
+    "models": "模型性能",
+    "usage": "用量"
   },
   "trend": {
     "requests": "请求趋势",
@@ -145,5 +146,28 @@
       "totalTokens": "Token"
     },
     "note_model": "模型指发给上游的模型 id（同名可能来自不同提供商），同一个请求名也可以被路由到几家上游——要看一家请求名走了哪几家、谁快谁慢，切到「请求名 × 提供商」。点列头排序，再点一次换方向；没有成功样本的模型（TPS 或首包为 0）始终排在最后，不会被当成最快。"
+  },
+  "usage": {
+    "metric_label": "统计口径",
+    "by_count": "按数量统计",
+    "by_tokens": "按 Tokens 统计",
+    "metric_count": "调用次数",
+    "metric_tokens": "Tokens",
+    "others": "其他",
+    "model_pie_count": "模型调用次数占比",
+    "model_pie_tokens": "模型 Tokens 占比",
+    "model_bar_count": "模型调用排行",
+    "model_bar_tokens": "模型 Tokens 排行",
+    "project_pie_count": "项目调用次数占比",
+    "project_pie_tokens": "项目 Tokens 占比",
+    "project_bar_count": "项目调用排行",
+    "project_bar_tokens": "项目 Tokens 排行",
+    "provider_model": {
+      "title": "供应商 / 模型 Tokens 用量",
+      "series_total": "总 Tokens",
+      "series_cached": "缓存 Tokens",
+      "others": "其他",
+      "empty": "该时间范围内暂无数据"
+    }
   }
 }

@@ -16,7 +16,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ModelCount, StatMetric } from "@/lib/api"
-import { compactNumber } from "@/lib/format"
+import { compactNumber, shortLabel } from "@/lib/format"
 import { seriesVar } from "@/lib/palette"
 
 // 数值一律走 compactNumber（K/M/B）。按 tokens 统计时原始值动辄 1e8，
@@ -68,14 +68,14 @@ interface ModelRankingChartProps {
 }
 
 export function ModelRankingChart({ data, metric }: ModelRankingChartProps) {
-  const { t } = useTranslation('home')
+  const { t } = useTranslation('analytics')
   const chartData = generateChartData(data)
-  const chartConfig = generateChartConfig(data, t(metric === 'tokens' ? 'charts.metric_tokens' : 'charts.metric_count'))
+  const chartConfig = generateChartConfig(data, t(metric === 'tokens' ? 'usage.metric_tokens' : 'usage.metric_count'))
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t(metric === 'tokens' ? 'charts.model_bar_tokens' : 'charts.model_bar_count')}</CardTitle>
+        <CardTitle>{t(metric === 'tokens' ? 'usage.model_bar_tokens' : 'usage.model_bar_count')}</CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className="aspect-auto h-[320px] w-full">
@@ -83,15 +83,20 @@ export function ModelRankingChart({ data, metric }: ModelRankingChartProps) {
             accessibilityLayer
             data={chartData}
             barSize={32}
+            // 顶部留出柱顶标签的高度（offset 12 + 字号 12），
+            // 否则最高那根柱的数值会被容器上边缘裁掉一半
+            margin={{ top: 28 }}
           >
             <CartesianGrid vertical={false} />
+            {/* 模型名常是完整路径，刻度只印 shortLabel 短名；
+                不强制 interval={0}——放不下的刻度让 recharts 跳过，
+                硬印全部只会叠成一团。完整名在 tooltip 里。 */}
             <XAxis
               dataKey="model"
               tickLine={false}
               axisLine={false}
               tickMargin={16}
-              interval={0}
-              tickFormatter={(value) => String(value)}
+              tickFormatter={(value) => shortLabel(String(value))}
             />
             <YAxis
               dataKey="value"

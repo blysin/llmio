@@ -39,17 +39,17 @@ interface ProviderModelBarChartProps {
 }
 
 export function ProviderModelBarChart({ data }: ProviderModelBarChartProps) {
-  const { t } = useTranslation('home')
+  const { t } = useTranslation('analytics')
 
   // color 不能省：ChartStyle 只为带 color 的 config 项生成 --color-* 变量
   const chartConfig: ChartConfig = {
-    tokens: { label: t('provider_model.series_total'), color: seriesVar(0) },
-    cached_tokens: { label: t('provider_model.series_cached'), color: seriesVar(1) },
+    tokens: { label: t('usage.provider_model.series_total'), color: seriesVar(0) },
+    cached_tokens: { label: t('usage.provider_model.series_cached'), color: seriesVar(1) },
   }
 
   const chartData = data.map((item) => ({
     label: item.others
-      ? t('provider_model.others')
+      ? t('usage.provider_model.others')
       : item.provider_model
         ? `${item.provider} / ${item.provider_model}`
         : item.provider,
@@ -62,12 +62,12 @@ export function ProviderModelBarChart({ data }: ProviderModelBarChartProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t('provider_model.title')}</CardTitle>
+        <CardTitle>{t('usage.provider_model.title')}</CardTitle>
       </CardHeader>
       <CardContent>
         {chartData.length === 0 ? (
           <div className="flex h-[320px] items-center justify-center text-sm text-muted-foreground">
-            {t('provider_model.empty')}
+            {t('usage.provider_model.empty')}
           </div>
         ) : (
           <ChartContainer config={chartConfig} className="aspect-auto w-full" style={{ height }}>

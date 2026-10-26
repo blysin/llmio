@@ -44,7 +44,8 @@
     "breakdown": "下鑽",
     "latency": "延遲",
     "errors": "錯誤",
-    "models": "模型性能"
+    "models": "模型性能",
+    "usage": "用量"
   },
   "trend": {
     "requests": "請求趨勢",
@@ -145,5 +146,28 @@
       "totalTokens": "Token"
     },
     "note_model": "模型指發給上游的模型 id（同名可能來自不同供應商），同一個請求名也可以被路由到幾家上游——要看一個請求名走了哪幾家、誰快誰慢，切到「請求名 × 供應商」。點欄頭排序，再點一次換方向；沒有成功樣本的模型（TPS 或首包為 0）一律排在最後，不會被當成最快。"
+  },
+  "usage": {
+    "metric_label": "統計口徑",
+    "by_count": "依次數統計",
+    "by_tokens": "依 Tokens 統計",
+    "metric_count": "呼叫次數",
+    "metric_tokens": "Tokens",
+    "others": "其他",
+    "model_pie_count": "模型呼叫次數佔比",
+    "model_pie_tokens": "模型 Tokens 佔比",
+    "model_bar_count": "模型呼叫排行",
+    "model_bar_tokens": "模型 Tokens 排行",
+    "project_pie_count": "專案呼叫次數佔比",
+    "project_pie_tokens": "專案 Tokens 佔比",
+    "project_bar_count": "專案呼叫排行",
+    "project_bar_tokens": "專案 Tokens 排行",
+    "provider_model": {
+      "title": "供應商 / 模型 Tokens 用量",
+      "series_total": "總 Tokens",
+      "series_cached": "快取 Tokens",
+      "others": "其他",
+      "empty": "此時間範圍內暫無資料"
+    }
   }
 }

@@ -190,6 +190,46 @@ describe("日志页 · 有数据", () => {
 })
 
 /**
+ * 缓存列的取整口径：一位小数，且封顶 99.9。
+ *
+ * cached_tokens === prompt_tokens 时原值就是 100，99.95+ 经四舍五入也会
+ * 冒出 100.0。界面上一出现 100%，读者只会当成统计口径坏了——所以这一列
+ * 永远到不了 100。
+ *
+ * 行内元素在 jsdom 里可能渲染多份（桌面表格 + 移动端卡片），一律用 AllBy。
+ */
+describe("日志页 · 缓存列", () => {
+  it("普通命中率保留一位小数", async () => {
+    renderPage()
+
+    // 250 / 1000 = 25%
+    expect(await screen.findAllByText("25.0%（250）")).not.toHaveLength(0)
+  })
+
+  it("全部命中封顶 99.9%，不出现 100%", async () => {
+    mocked.getLogs.mockResolvedValue(
+      response([log({ prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 1000 } })])
+    )
+    renderPage()
+
+    expect(await screen.findAllByText("99.9%（1,000）")).not.toHaveLength(0)
+    expect(screen.queryAllByText("100.0%（1,000）")).toHaveLength(0)
+    expect(screen.queryAllByText("100%（1,000）")).toHaveLength(0)
+  })
+
+  it("四舍五入本会得到 100.0 的边界值同样封顶", async () => {
+    // 9996 / 10000 = 99.96%，裸 toFixed(1) 得到的是 "100.0"
+    mocked.getLogs.mockResolvedValue(
+      response([log({ prompt_tokens: 10000, prompt_tokens_details: { cached_tokens: 9996 } })])
+    )
+    renderPage()
+
+    expect(await screen.findAllByText("99.9%（9,996）")).not.toHaveLength(0)
+    expect(screen.queryAllByText(/100\.0%/)).toHaveLength(0)
+  })
+})
+
+/**
  * 单行删除。
  *
  * 后端这一步是**硬删除**（连 IO 记录一起），没有回收站，所以界面上的确认框

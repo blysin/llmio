@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import AnalyticsPage from "@/routes/analytics"
 import {
   getAuthKeysList,
+  getProviderModelUsage,
   getStats,
   getStatsGranularities,
   type GroupStat,
@@ -13,19 +14,23 @@ import {
 } from "@/lib/api"
 import type { StatsQuery } from "@/lib/api"
 
-// 页面的三个数据来源全部来自这一个模块，在这里切断即断开了页面的全部 IO。
+// 页面的数据来源全部来自这一个模块，在这里切断即断开了页面的全部 IO。
 // api.ts 的其余导出（类型与别的端点）保持真实——类型在运行时不存在，
 // 而别的端点是别的页面的依赖，与本页无关。
 vi.mock("@/lib/api", () => ({
   getStats: vi.fn(),
   getStatsGranularities: vi.fn(),
   getAuthKeysList: vi.fn(),
+  // 用量视图里的「供应商 × 上游模型」图另走一个端点；默认返回空数组，
+  // 不关心它的用例不必各自铺数据
+  getProviderModelUsage: vi.fn(async () => []),
 }))
 
 const mocked = {
   getStats: vi.mocked(getStats),
   getStatsGranularities: vi.mocked(getStatsGranularities),
   getAuthKeysList: vi.mocked(getAuthKeysList),
+  getProviderModelUsage: vi.mocked(getProviderModelUsage),
 }
 
 /**
@@ -136,6 +141,17 @@ function renderPage() {
 }
 
 /**
+ * 切到「趋势」视图。
+ *
+ * 页面默认停在「用量」，因此凡是要读趋势 / 下钻 / 延迟等视图的用例，都得先
+ * 换到那一面。视图切换器只在有数据时出现，所以这里等的是它而不是固定文案。
+ */
+async function openTrend() {
+  fireEvent.click(await screen.findByRole("radio", { name: "趋势" }))
+  return screen.findByText("请求趋势")
+}
+
+/**
  * 已发出的所有查询串。
  *
  * 按集合而不是"最后一次"断言：筛选生效时页面并行发两个请求（带筛选的与
@@ -165,6 +181,7 @@ beforeEach(async () => {
   mocked.getStats.mockResolvedValue(fixture())
   mocked.getStatsGranularities.mockResolvedValue(["5m", "1h", "1d"])
   mocked.getAuthKeysList.mockResolvedValue([{ id: 3, name: "dev-key" }])
+  mocked.getProviderModelUsage.mockResolvedValue([])
   const i18n = (await import("@/i18n")).default
   await i18n.changeLanguage("zh-CN")
 })
@@ -207,15 +224,65 @@ describe("分析页 · 错误", () => {
     await user.click(screen.getByRole("button", { name: "重试" }))
 
     await waitFor(() => expect(mocked.getStats).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText("请求趋势")).toBeInTheDocument()
+    await openTrend()
   })
 })
 
 describe("分析页 · 有数据", () => {
-  it("默认给出趋势读数与两个视图入口", async () => {
+  it("默认停在「用量」：五张用量图在场，口径默认按 Tokens", async () => {
     renderPage()
 
-    expect(await screen.findByText("请求趋势")).toBeInTheDocument()
+    expect(await screen.findByText("模型 Tokens 占比")).toBeInTheDocument()
+    expect(screen.getByText("项目 Tokens 占比")).toBeInTheDocument()
+    expect(screen.getByText("模型 Tokens 排行")).toBeInTheDocument()
+    expect(screen.getByText("项目 Tokens 排行")).toBeInTheDocument()
+    expect(screen.getByText("供应商 / 模型 Tokens 用量")).toBeInTheDocument()
+    // 口径开关默认选 Tokens：这一页回答的是"用量"
+    expect(screen.getByRole("radio", { name: "按 Tokens 统计" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    )
+  })
+
+  it("口径切到调用次数时四张模型 / 项目图的标题跟着换，且不重新取 stats", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText("模型 Tokens 占比")
+    // 四张图直接读 stats 的分组结果，换口径只是换读哪个字段
+    mocked.getStats.mockClear()
+
+    await user.click(screen.getByRole("radio", { name: "按数量统计" }))
+
+    expect(screen.getByText("模型调用次数占比")).toBeInTheDocument()
+    expect(screen.getByText("项目调用次数占比")).toBeInTheDocument()
+    expect(screen.getByText("模型调用排行")).toBeInTheDocument()
+    expect(screen.getByText("项目调用排行")).toBeInTheDocument()
+    expect(mocked.getStats).not.toHaveBeenCalled()
+  })
+
+  it("供应商 / 模型用量图与 stats 吃同一个切片", async () => {
+    const user = userEvent.setup()
+    mocked.getProviderModelUsage.mockResolvedValue([
+      { provider: "prov-a", provider_model: "gpt-test", tokens: 1500, cached_tokens: 250 },
+    ])
+    renderPage()
+    await screen.findByText("供应商 / 模型 Tokens 用量")
+
+    // 首屏那次：查询串就是 stats 用的那一份（同一个时间窗，同一套筛选）
+    const first = mocked.getProviderModelUsage.mock.calls[0]?.[0]
+    expect(first?.from).toBe(queries()[0]?.from)
+    expect(first?.to).toBe(queries()[0]?.to)
+
+    // 换时间范围后它跟着重新取数，而不是留在旧窗口上
+    mocked.getProviderModelUsage.mockClear()
+    await user.click(screen.getByRole("radio", { name: "近 7 天" }))
+    await waitFor(() => expect(mocked.getProviderModelUsage).toHaveBeenCalled())
+  })
+
+  it("趋势视图给出读数与两个图表", async () => {
+    renderPage()
+    await openTrend()
+
     expect(screen.getByText(/共 10 次，成功 9 · 失败 1 · 在途 0/)).toBeInTheDocument()
     expect(screen.getByText("Token 趋势")).toBeInTheDocument()
   })
@@ -230,7 +297,7 @@ describe("分析页 · 有数据", () => {
   it("下钻：点名称即按该值筛选，再次点击取消", async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
 
     await user.click(screen.getByRole("radio", { name: "下钻" }))
     const cell = await screen.findByRole("button", { name: "gpt-test" })
@@ -251,7 +318,7 @@ describe("分析页 · 有数据", () => {
     mocked.getStats.mockResolvedValue(fixture())
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
     // 无筛选时只发一次请求
     expect(mocked.getStats).toHaveBeenCalledTimes(1)
 
@@ -267,7 +334,7 @@ describe("分析页 · 有数据", () => {
   it("自定义范围：切过来时预填当前预设的窗口，改了就按新窗口取数", async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
 
     await user.click(screen.getByRole("radio", { name: "自定义" }))
     const from = screen.getByLabelText("起始时间") as HTMLInputElement
@@ -287,7 +354,7 @@ describe("分析页 · 有数据", () => {
   it("自定义范围非法时不发请求，也不把已有视图清空", async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
 
     await user.click(screen.getByRole("radio", { name: "自定义" }))
     mocked.getStats.mockClear()
@@ -303,7 +370,7 @@ describe("分析页 · 有数据", () => {
   it("密钥筛选传 id 而不传展示名", async () => {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
 
     await user.click(screen.getByRole("button", { name: "密钥" }))
     await user.click(await screen.findByRole("checkbox", { name: "dev-key" }))
@@ -358,7 +425,7 @@ describe("分析页 · 模型性能", () => {
   async function openModels() {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
     await user.click(screen.getByRole("radio", { name: "模型性能" }))
     return user
   }
@@ -440,7 +507,7 @@ describe("分析页 · 在同一请求名的各家提供商之间比", () => {
   async function openDimension(name: string) {
     const user = userEvent.setup()
     renderPage()
-    await screen.findByText("请求趋势")
+    await openTrend()
     await user.click(screen.getByRole("radio", { name: "模型性能" }))
     await user.click(screen.getByRole("radio", { name }))
     return user

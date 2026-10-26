@@ -118,21 +118,6 @@
     "project_counts": "Failed to load project counts: {{message}}"
   },
   "retry": "Retry",
-  "charts": {
-    "metric_label": "Metric",
-    "by_count": "By Calls",
-    "by_tokens": "By Tokens",
-    "metric_count": "Calls",
-    "metric_tokens": "Tokens",
-    "model_pie_count": "Model Call Share",
-    "model_pie_tokens": "Model Token Share",
-    "model_bar_count": "Model Call Ranking",
-    "model_bar_tokens": "Model Token Ranking",
-    "project_pie_count": "Project Call Share",
-    "project_pie_tokens": "Project Token Share",
-    "project_bar_count": "Project Call Ranking",
-    "project_bar_tokens": "Project Token Ranking"
-  },
   "timeline": {
     "title": "Token Usage Trend",
     "model_label": "Model",
@@ -145,13 +130,6 @@
     "range_90d": "Last 90 Days",
     "series_total": "Total Tokens",
     "series_cached": "Cached Tokens",
-    "empty": "No data in this time range"
-  },
-  "provider_model": {
-    "title": "Provider / Model Token Usage",
-    "series_total": "Total Tokens",
-    "series_cached": "Cached Tokens",
-    "others": "Others",
     "empty": "No data in this time range"
   }
 }

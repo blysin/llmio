@@ -6,6 +6,22 @@
  * 算错不会报错、只会给出误导性的数字。
  */
 
+/**
+ * 图表轴/图例用的短名：超长文本中段截断（保头保尾）。
+ *
+ * 模型名常是完整路径（"/home/…/Ternary-Bonsai-PQ2_0.gguf"），整段印在
+ * X 轴或图例里会互相叠字。中段截断而不是掐头，是因为不同来源的同名文件
+ * 靠路径前缀区分——掐头会把两个不同模型缩成同一个假名。
+ * 完整值永远在 tooltip / title 里。
+ */
+export function shortLabel(text: string, max = 20): string {
+  if (text.length <= max) return text
+  const keep = max - 1
+  const head = Math.ceil(keep / 2)
+  const tail = Math.floor(keep / 2)
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`
+}
+
 /** 紧凑数字：12900 → "12.9K"。用于卡片与轴刻度。 */
 export function compactNumber(value: number): string {
   if (!Number.isFinite(value)) return "0"

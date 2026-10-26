@@ -9,6 +9,7 @@ import { EmptyState, ErrorState } from "@/components/state-views"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { FilterRow, type FilterOption, type FilterOptions, type RangeKey } from "@/routes/analytics-filters"
+import { UsageView } from "@/routes/analytics-usage-view"
 import { BreakdownView, ErrorsView, LatencyView, ModelsView } from "@/routes/analytics-views"
 import {
   activeFilterCount,
@@ -38,6 +39,7 @@ import {
   getStats,
   getStatsGranularities,
   type AuthKeyItem,
+  type StatsQuery,
   type StatsResult,
 } from "@/lib/api"
 import { compactNumber, formatNumber, formatPercent } from "@/lib/format"
@@ -66,7 +68,8 @@ export default function AnalyticsPage() {
   const [granularity, setGranularity] = useState("auto")
   const [granularities, setGranularities] = useState<string[]>([])
   const [filter, setFilter] = useState<AnalyticsFilter>(EMPTY_FILTER)
-  const [view, setView] = useState<AnalyticsView>("trend")
+  /** 默认停在「用量」：这一页最常被问的是"谁在烧 Tokens"，而不是"刚才发生了什么"。 */
+  const [view, setView] = useState<AnalyticsView>("usage")
   const [dimension, setDimension] = useState<DimensionKey>("model")
   /**
    * 模型性能表的排序。与 `view` / `dimension` 一样只存在组件内，不进 URL：
@@ -89,6 +92,15 @@ export default function AnalyticsPage() {
    * 仅在确实有筛选时多发这一次请求。
    */
   const [universe, setUniverse] = useState<StatsResult | null>(null)
+  /**
+   * 最近一次 stats 取数用的查询串。
+   *
+   * 用量视图里的「供应商 × 上游模型」图另走 `/metrics/provider-models`，
+   * 但它必须与 stats 吃同一个切片，否则两张图的筛选口径会分叉。把同一份
+   * 查询原样递下去，是唯一不会漂移的做法。对象每次取数都重建，
+   * 因此静默刷新也会让那张图跟着重新取数。
+   */
+  const [usageQuery, setUsageQuery] = useState<StatsQuery | null>(null)
   const [authKeys, setAuthKeys] = useState<AuthKeyItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -112,6 +124,7 @@ export default function AnalyticsPage() {
       try {
         const rangeOnly = buildStatsQuery({ ...span, granularity, filter: EMPTY_FILTER })
         const filtered = buildStatsQuery({ ...span, granularity, filter })
+        setUsageQuery(filtered)
         const [data, base] = hasFilter
           ? await Promise.all([getStats(filtered), getStats(rangeOnly)])
           : [await getStats(filtered), null]
@@ -290,6 +303,7 @@ export default function AnalyticsPage() {
           <EmptyState title={t("analytics:empty.title")} hint={t("analytics:empty.hint")} />
         ) : (
           <div className="space-y-3 pb-1">
+            {view === "usage" && <UsageView stats={stats!} query={usageQuery} />}
             {view === "trend" && <TrendView stats={stats!} />}
             {view === "breakdown" && (
               <BreakdownView

@@ -16,7 +16,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart"
 import type { ProjectCount, StatMetric } from "@/lib/api"
-import { compactNumber } from "@/lib/format"
+import { compactNumber, shortLabel } from "@/lib/format"
 import { seriesVar } from "@/lib/palette"
 
 // 数值一律走 compactNumber（K/M/B）。按 tokens 统计时原始值动辄 1e8，
@@ -68,14 +68,14 @@ interface ProjectRankingChartProps {
 }
 
 export function ProjectRankingChart({ data, metric }: ProjectRankingChartProps) {
-  const { t } = useTranslation('home')
+  const { t } = useTranslation('analytics')
   const chartData = generateChartData(data)
-  const chartConfig = generateChartConfig(data, t(metric === 'tokens' ? 'charts.metric_tokens' : 'charts.metric_count'))
+  const chartConfig = generateChartConfig(data, t(metric === 'tokens' ? 'usage.metric_tokens' : 'usage.metric_count'))
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t(metric === 'tokens' ? 'charts.project_bar_tokens' : 'charts.project_bar_count')}</CardTitle>
+        <CardTitle>{t(metric === 'tokens' ? 'usage.project_bar_tokens' : 'usage.project_bar_count')}</CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className="aspect-auto h-[320px] w-full">
@@ -83,15 +83,18 @@ export function ProjectRankingChart({ data, metric }: ProjectRankingChartProps) 
             accessibilityLayer
             data={chartData}
             barSize={32}
+            // 与 bar-chart 同一口径：顶部留出柱顶标签的高度，防止最高柱的数值被裁
+            margin={{ top: 28 }}
           >
             <CartesianGrid vertical={false} />
+            {/* 与 bar-chart 同一套刻度规则：shortLabel 短名 + 放不下自动跳过。
+                项目名目前都短，这里是防御性对齐。 */}
             <XAxis
               dataKey="project"
               tickLine={false}
               axisLine={false}
               tickMargin={16}
-              interval={0}
-              tickFormatter={(value) => String(value)}
+              tickFormatter={(value) => shortLabel(String(value))}
             />
             <YAxis
               dataKey="value"

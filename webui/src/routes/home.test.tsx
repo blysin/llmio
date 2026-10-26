@@ -15,15 +15,11 @@ import {
 } from "@/lib/api"
 import { UI_PREFS_STORAGE_KEY } from "@/lib/prefs"
 
-// 本页的数据来源：概览聚合、错误样本点开时按 id 取的那一条日志，以及本地分支
-// 新增的三组用量排行（模型 / 项目 / 供应商维度）。排行三组默认返回空数组：
-// 它们失败时页面刻意静默，测试只关心概览本身的四态。
+// 本页的数据来源只有两个：概览聚合，以及错误样本点开时按 id 取的那一条日志。
+// （用量排行已迁到分析页的「用量」视图，不再由本页取数。）
 vi.mock("@/lib/api", () => ({
   getStats: vi.fn(),
   getLogById: vi.fn(),
-  getModelCounts: vi.fn(async () => []),
-  getProjectCounts: vi.fn(async () => []),
-  getProviderModelUsage: vi.fn(async () => []),
 }))
 
 const mocked = { getStats: vi.mocked(getStats), getLogById: vi.mocked(getLogById) }

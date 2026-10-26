@@ -44,7 +44,8 @@
     "breakdown": "Breakdown",
     "latency": "Latency",
     "errors": "Errors",
-    "models": "Model performance"
+    "models": "Model performance",
+    "usage": "Usage"
   },
   "trend": {
     "requests": "Request trend",
@@ -145,5 +146,28 @@
       "totalTokens": "Tokens"
     },
     "note_model": "Model is the upstream model id actually sent to the provider — the same name can come from different providers, and one request name can be routed to several of them. Switch to “Request name × provider” to see which providers a request name went to and how they compare. Click a column header to sort; click again to flip the direction. Models with no successful sample (TPS or first chunk of 0) always sort last — they are never treated as the fastest."
+  },
+  "usage": {
+    "metric_label": "Metric",
+    "by_count": "By Calls",
+    "by_tokens": "By Tokens",
+    "metric_count": "Calls",
+    "metric_tokens": "Tokens",
+    "others": "Others",
+    "model_pie_count": "Model Call Share",
+    "model_pie_tokens": "Model Token Share",
+    "model_bar_count": "Model Call Ranking",
+    "model_bar_tokens": "Model Token Ranking",
+    "project_pie_count": "Project Call Share",
+    "project_pie_tokens": "Project Token Share",
+    "project_bar_count": "Project Call Ranking",
+    "project_bar_tokens": "Project Token Ranking",
+    "provider_model": {
+      "title": "Provider / Model Token Usage",
+      "series_total": "Total Tokens",
+      "series_cached": "Cached Tokens",
+      "others": "Others",
+      "empty": "No data in this time range"
+    }
   }
 }

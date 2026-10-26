@@ -203,9 +203,16 @@ export function buildStatsQuery(input: {
 // 视图与下钻维度
 // ---------------------------------------------------------------------------
 
-export type AnalyticsView = "trend" | "breakdown" | "latency" | "errors" | "models"
+/**
+ * 视图清单。
+ *
+ * `usage` 排在首位：用量是这一页最常被问的问题（"谁在烧 Tokens"），
+ * 页面默认停在它上面。
+ */
+export type AnalyticsView = "usage" | "trend" | "breakdown" | "latency" | "errors" | "models"
 
 export const VIEWS = [
+  "usage",
   "trend",
   "breakdown",
   "latency",

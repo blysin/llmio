@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { AlertTriangle, ArrowUpRight, RefreshCw } from "lucide-react"
 
@@ -12,16 +12,8 @@ import { EmptyState, ErrorState } from "@/components/state-views"
 import { Card, CardContent } from "@/components/ui/card"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import {
-  getModelCounts,
-  getProjectCounts,
-  getProviderModelUsage,
   getStats,
-  type ModelCount,
-  type ProjectCount,
-  type ProviderModelUsage,
-  type StatMetric,
   type StatsResult,
-  type TimelineRange,
 } from "@/lib/api"
 import { statsRowNames } from "@/lib/analytics"
 import {
@@ -44,32 +36,6 @@ import {
   writeUiPrefs,
   type UiPrefs,
 } from "@/lib/prefs"
-
-// 本地分支新增的用量排行图表。全部懒加载：首页首屏的 Hero/KPI 不该为了等图表库
-// 而晚一拍，chart.js 只在滚动到这一屏时才下载。
-const ModelSharePie = lazy(() =>
-  import("@/components/charts/pie-chart").then((m) => ({ default: m.ChartPieDonutText }))
-)
-const ProjectSharePie = lazy(() =>
-  import("@/components/charts/project-pie-chart").then((m) => ({ default: m.ProjectChartPieDonutText }))
-)
-const ModelRankingChart = lazy(() =>
-  import("@/components/charts/bar-chart").then((m) => ({ default: m.ModelRankingChart }))
-)
-const ProjectRankingChart = lazy(() =>
-  import("@/components/charts/project-bar-chart").then((m) => ({ default: m.ProjectRankingChart }))
-)
-const ProviderModelUsageChart = lazy(() =>
-  import("@/components/charts/provider-model-bar-chart").then((m) => ({ default: m.ProviderModelBarChart }))
-)
-
-/** 概览页的时间范围 → 本地统计接口（feat/token-usage-trend）接受的口径。 */
-const HOME_RANGE_TO_TIMELINE: Record<HomeRange, TimelineRange> = {
-  today: "today",
-  last_24h: "24h",
-  last_7d: "7d",
-  last_30d: "30d",
-}
 
 /** 时间范围的选项清单在 lib/prefs 的 HOME_RANGES 里，取值即后端的换算口径。 */
 const RANGE_HOURS: Record<HomeRange, number | "today"> = {
@@ -155,53 +121,13 @@ export default function Home() {
     void load()
   }, [load])
 
-  /**
-   * 本地分支新增的用量排行：口径只在「调用次数 / Tokens」之间切换，
-   * 时间范围跟随页面上那条筛选行（同一个 range，避免一页两套时间窗口）。
-   *
-   * 与 stats 分开取：这三组接口比 /metrics/stats 轻得多，失败时保留上一次结果
-   * 即可——为排行榜把首屏打成失败态不划算。
-   */
-  const [usageMetric, setUsageMetric] = useState<StatMetric>("count")
-  const [modelCounts, setModelCounts] = useState<ModelCount[]>([])
-  const [projectCounts, setProjectCounts] = useState<ProjectCount[]>([])
-  const [providerUsage, setProviderUsage] = useState<ProviderModelUsage[]>([])
-
-  const loadUsage = useCallback(async () => {
-    const timelineRange = HOME_RANGE_TO_TIMELINE[range]
-    try {
-      const [models, projects, providers] = await Promise.all([
-        getModelCounts(usageMetric, timelineRange),
-        getProjectCounts(usageMetric, timelineRange),
-        getProviderModelUsage(timelineRange),
-      ])
-      setModelCounts(models)
-      setProjectCounts(projects)
-      setProviderUsage(providers)
-    } catch {
-      // 刻意静默：这三块是排行视图，取不到就继续显示上一轮的结果
-    }
-  }, [range, usageMetric])
-
-  useEffect(() => {
-    void loadUsage()
-  }, [loadUsage])
-
   // 自动刷新走静默取数：不闪骨架、不落成错误条
   useAutoRefresh(sec, () => {
     void load(true)
-    void loadUsage()
   })
 
   const kpi = stats?.kpi
   const hasData = (kpi?.total ?? 0) > 0
-
-  // 按实体的稳定全集分配颜色。这里用 stats.byModel 的**全部**名称（而非
-  // 图表里出现的子集）作为 universe，保证筛选后颜色不漂移。
-  const modelNames = useMemo(
-    () => (stats?.byModel ?? []).map((g) => g.name),
-    [stats]
-  )
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-1">
@@ -364,63 +290,11 @@ export default function Home() {
                 tone="critical"
               />
             </div>
-
-            {/* 用量排行（本地分支新增）：上游概览页没有这两组视图。口径开关放在
-                这一组之上，同时作用于模型与项目的四张图——两列同排讲同一件事 */}
-            <div className="flex flex-wrap items-center justify-end gap-1">
-              <span className="mr-1 text-xs text-muted-foreground">{t("home:charts.metric_label")}</span>
-              <Button
-                size="sm"
-                variant={usageMetric === "count" ? "default" : "outline"}
-                onClick={() => setUsageMetric("count")}
-              >
-                {t("home:charts.by_count")}
-              </Button>
-              <Button
-                size="sm"
-                variant={usageMetric === "tokens" ? "default" : "outline"}
-                onClick={() => setUsageMetric("tokens")}
-              >
-                {t("home:charts.by_tokens")}
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <Suspense fallback={<ChartSkeleton />}>
-                <ModelSharePie data={modelCounts} metric={usageMetric} />
-              </Suspense>
-              <Suspense fallback={<ChartSkeleton />}>
-                <ProjectSharePie data={projectCounts} metric={usageMetric} />
-              </Suspense>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <Suspense fallback={<ChartSkeleton />}>
-                <ModelRankingChart data={modelCounts} metric={usageMetric} />
-              </Suspense>
-              <Suspense fallback={<ChartSkeleton />}>
-                <ProjectRankingChart data={projectCounts} metric={usageMetric} />
-              </Suspense>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3">
-              <Suspense fallback={<ChartSkeleton />}>
-                <ProviderModelUsageChart data={providerUsage} />
-              </Suspense>
-            </div>
-
-            {/* 与模型名的稳定全集挂钩，保证未来加图表时颜色口径一致 */}
-            <span className="sr-only">{modelNames.join(",")}</span>
           </div>
         )}
       </div>
     </div>
   )
-}
-
-/** 图表懒加载时的占位：与首屏骨架同一视觉语言（animate-pulse 圆角块）。 */
-function ChartSkeleton() {
-  return <div className="h-64 animate-pulse rounded-lg bg-muted" />
 }
 
 /**

@@ -1494,19 +1494,6 @@ export async function getMetrics(days: number): Promise<MetricsData> {
   return apiRequest<MetricsData>(`/metrics/use/${days}`);
 }
 
-// range 缺省时不限时间（全量口径）；传入时按对应时间窗口过滤
-export async function getModelCounts(metric: StatMetric = "count", range?: TimelineRange): Promise<ModelCount[]> {
-  const params = new URLSearchParams({ by: metric });
-  if (range) params.set("range", range);
-  return apiRequest<ModelCount[]>(`/metrics/counts?${params.toString()}`);
-}
-
-export async function getProjectCounts(metric: StatMetric = "count", range?: TimelineRange): Promise<ProjectCount[]> {
-  const params = new URLSearchParams({ by: metric });
-  if (range) params.set("range", range);
-  return apiRequest<ProjectCount[]>(`/metrics/projects?${params.toString()}`);
-}
-
 // 按「实际供应商 + 实际上游模型」聚合的 Tokens 用量（与按请求模型名分组的 ModelCount 互补）
 export interface ProviderModelUsage {
   provider: string;        // 实际供应商名
@@ -1516,12 +1503,15 @@ export interface ProviderModelUsage {
   others?: boolean;        // 超出 Top N 合并而成的汇总条目
 }
 
-// range 缺省时不限时间（全量口径）；传入时按对应时间窗口过滤
-export async function getProviderModelUsage(range?: TimelineRange): Promise<ProviderModelUsage[]> {
+// 接受与 /metrics/stats 相同的查询串（from/to + 各维度筛选），
+// 使分析页各视图共用同一个切片；不传参数时按全量口径。
+export async function getProviderModelUsage(query: StatsQuery = {}): Promise<ProviderModelUsage[]> {
   const params = new URLSearchParams();
-  if (range) params.set("range", range);
-  const query = params.toString();
-  return apiRequest<ProviderModelUsage[]>(`/metrics/provider-models${query ? `?${query}` : ""}`);
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") params.append(key, value);
+  }
+  const qs = params.toString();
+  return apiRequest<ProviderModelUsage[]>(`/metrics/provider-models${qs ? `?${qs}` : ""}`);
 }
 
 export interface TimelinePoint {

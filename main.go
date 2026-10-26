@@ -133,12 +133,11 @@ func main() {
 		// 保证一次请求对应一个时间切片（见 handler/stats.go 的说明）。
 		api.GET("/metrics/stats", handler.Stats)
 		api.GET("/metrics/granularities", handler.StatsGranularities)
-		// 系统概览 metrics (feat/token-usage-trend): 缓存 Token 统计、Tokens 用量趋势、按调用/Tokens 口径排行
+		// 系统概览 metrics (feat/token-usage-trend): 缓存 Token 统计、Tokens 用量趋势
 		api.GET("/metrics/use/:days", handler.Metrics)
 		api.GET("/metrics/timeline", handler.Timeline)
 		api.GET("/metrics/models", handler.TimelineModels)
-		api.GET("/metrics/counts", handler.Counts)
-		api.GET("/metrics/projects", handler.ProjectCounts)
+		// 供应商 × 上游模型的 Tokens 用量（分析页「用量」视图；接受与 /metrics/stats 相同的筛选参数）
 		api.GET("/metrics/provider-models", handler.ProviderModelUsage)
 		// Provider management
 		api.GET("/providers/template", handler.GetProviderTemplates)

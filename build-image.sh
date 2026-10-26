@@ -5,10 +5,10 @@
 # 本脚本须在装有 Docker 的 WSL 中运行；Windows 侧请用同目录的 build-image.bat 包装器调用。
 #
 # 用法：
-#   bash build-image.sh                 自动推导下一个 patch 版本号（基于本地最高 vX.Y.Z tag）
+#   bash build-image.sh                 构建并把 <version> 与 latest 推送到远端（latest 为默认行为）
 #   bash build-image.sh -v v0.8.17      指定版本号
 #   bash build-image.sh --no-push       只构建 + 打本地 tag，不推送
-#   bash build-image.sh --push-latest   额外推送 latest tag 到远端
+#   bash build-image.sh --no-latest     推送 <version>，但不推送 latest
 #   bash build-image.sh --no-cache      禁用 Docker 构建缓存
 #   bash build-image.sh --dry-run       只展示执行计划，不实际构建
 #
@@ -53,7 +53,8 @@ build-image.sh — 构建 llmio Docker 镜像并推送到阿里云 ACR
 选项：
   -v, --version <vX.Y.Z>   指定镜像版本号（默认：本地最高 vX.Y.Z tag 的 patch + 1）
       --no-push            只构建并打本地 tag，不推送
-      --push-latest        额外推送 latest tag
+      --no-latest          推送 <version> 但不推送 latest（默认会推送 latest）
+      --push-latest        兼容旧调用，显式开启 latest 推送（默认已开启）
       --no-cache           禁用 Docker 构建缓存
       --dry-run            只展示执行计划，不实际构建
   -h, --help               显示本帮助
@@ -79,7 +80,7 @@ EOF
 # ---------------------------------------------------------------------------
 VERSION=""
 DO_PUSH=1
-PUSH_LATEST=0
+PUSH_LATEST=1
 NO_CACHE=0
 DRY_RUN=0
 
@@ -89,6 +90,7 @@ while [[ $# -gt 0 ]]; do
       if [[ $# -lt 2 ]]; then echo "错误: $1 需要一个参数" >&2; exit 2; fi
       VERSION="$2"; shift 2;;
     --no-push)     DO_PUSH=0; shift;;
+    --no-latest)   PUSH_LATEST=0; shift;;
     --push-latest) PUSH_LATEST=1; shift;;
     --no-cache)    NO_CACHE=1; shift;;
     --dry-run)     DRY_RUN=1; shift;;
@@ -149,10 +151,18 @@ else
 fi
 if [[ "$DO_PUSH" == 1 ]]; then
   printf " 本地镜像 : %s:%s , %s:latest\n" "$LOCAL_IMAGE" "$VERSION" "$LOCAL_IMAGE"
-  printf " 远端镜像 : %s:%s\n" "$REMOTE_IMAGE" "$VERSION"
-  printf " 推送     : 是\n"
+  printf " 远端镜像 : %s:%s" "$REMOTE_IMAGE" "$VERSION"
+  if [[ "$PUSH_LATEST" == 1 ]]; then
+    printf " , %s:latest\n" "$REMOTE_IMAGE"
+  else
+    printf "\n"
+  fi
+  printf " 推送     : 是"
+  if [[ "$PUSH_LATEST" == 1 ]]; then printf " (含 latest)"; fi
+  printf "\n"
 else
   printf " 本地镜像 : %s:%s , %s:latest\n" "$LOCAL_IMAGE" "$VERSION" "$LOCAL_IMAGE"
+  printf " 远端镜像 : %s:%s\n" "$REMOTE_IMAGE" "$VERSION"
   printf " 推送     : 否 (--no-push)\n"
 fi
 if [[ "$NO_CACHE" == 1 ]]; then echo " 缓存     : 已禁用 (--no-cache)"; fi
@@ -233,5 +243,6 @@ echo
 echo "========================================================"
 echo " ✓ 完成"
 echo "   远端地址 : ${REMOTE_IMAGE}:${VERSION}"
+if [[ "$PUSH_LATEST" == 1 ]]; then echo "   远端地址 : ${REMOTE_IMAGE}:latest"; fi
 if [[ -n "$DIGEST" ]]; then echo "   Digest   : ${DIGEST}"; fi
 echo "========================================================"

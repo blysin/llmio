@@ -264,10 +264,17 @@ function ChartLegendContent({
   payload,
   verticalAlign = "bottom",
   nameKey,
+  formatter,
 }: React.ComponentProps<"div"> &
   Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
     hideIcon?: boolean
     nameKey?: string
+    /**
+     * 图例文本的展示格式化器。config.label 是共享的唯一真相来源
+     * （tooltip 也读它），截断这类「只该影响图例」的加工必须收在这里，
+     * 而不是把 config.label 截短——那会把 tooltip 里的完整名一起截没。
+     */
+    formatter?: (label: React.ReactNode) => React.ReactNode
   }) {
   const { config } = useChart()
 
@@ -291,7 +298,9 @@ function ChartLegendContent({
           <div
             key={item.value}
             className={cn(
-              "[&>svg]:text-muted-foreground flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3"
+              "[&>svg]:text-muted-foreground flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3",
+              // min-w-0 让 flex 子项可以收缩到内容以下，truncate 才截得动
+              "min-w-0"
             )}
           >
             {itemConfig?.icon && !hideIcon ? (
@@ -304,7 +313,7 @@ function ChartLegendContent({
                 }}
               />
             )}
-            {itemConfig?.label}
+            {formatter ? formatter(itemConfig?.label ?? item.value) : itemConfig?.label}
           </div>
         )
       })}

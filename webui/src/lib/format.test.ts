@@ -17,7 +17,37 @@ import {
   formatSeconds,
   formatTps,
   inferBucketMs,
+  shortLabel,
 } from "@/lib/format"
+
+describe("shortLabel", () => {
+  it("不超过上限时原样返回", () => {
+    expect(shortLabel("deepseek-v4.1-flash")).toBe("deepseek-v4.1-flash")
+    expect(shortLabel("sam-dev")).toBe("sam-dev")
+    expect(shortLabel("", 20)).toBe("")
+  })
+
+  it("超长时中段截断，长度不超过 max", () => {
+    const long = "/home/lds/Bonsai-demo/models/bonsai2-gguf/278/Ternary-Bonsai-PQ2_0.gguf"
+    const short = shortLabel(long)
+    expect(short.length).toBeLessThanOrEqual(20)
+    expect(short).toContain("…")
+    // 保头保尾：路径前缀和文件名后缀都还在
+    expect(short.startsWith("/home/ld")).toBe(true)
+    expect(short.endsWith("0.gguf")).toBe(true)
+  })
+
+  it("不同前缀的同名文件截断后仍可区分", () => {
+    const a = "/home/lds/models/Ternary-Bonsai-PQ2_0.gguf"
+    const b = "/root/Bonsai/models/Ternary-Bonsai-PQ2_0.gguf"
+    expect(shortLabel(a)).not.toBe(shortLabel(b))
+  })
+
+  it("自定义上限生效", () => {
+    const short = shortLabel("/very/long/model/path/name.gguf", 8)
+    expect(short.length).toBeLessThanOrEqual(8)
+  })
+})
 
 describe("compactNumber", () => {
   it("万以下按千分位原样显示", () => {

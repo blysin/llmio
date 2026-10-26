@@ -1,21 +1,15 @@
 package handler
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atopos31/llmio/common"
 	"github.com/atopos31/llmio/models"
+	"github.com/atopos31/llmio/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-)
-
-// 统计口径
-const (
-	metricByCount  = "count"  // 按调用数量统计
-	metricByTokens = "tokens" // 按 Tokens 统计
 )
 
 // cachedTokensSumExpr 求和 JSON 列 prompt_tokens_details 中的 cached_tokens；NULL 与非法 JSON 均记为 0
@@ -94,18 +88,6 @@ func timelineBuckets(rangeKey string, now time.Time) (buckets []time.Time, layou
 	}
 }
 
-// parseMetricBy 解析 by 查询参数，缺省按数量统计
-func parseMetricBy(c *gin.Context) (string, bool) {
-	switch by := c.Query("by"); by {
-	case "", metricByCount:
-		return metricByCount, true
-	case metricByTokens:
-		return metricByTokens, true
-	default:
-		return "", false
-	}
-}
-
 // rangeWindow 把 range 查询参数解析成统计窗口 [start, end)，与折线图 Timeline 共用同一套分桶边界。
 // 返回 limited=false 表示不带时间限制（range 缺省，保留全量口径）；valid=false 表示 range 取值非法。
 func rangeWindow(c *gin.Context, now time.Time) (start, end time.Time, limited, valid bool) {
@@ -118,14 +100,6 @@ func rangeWindow(c *gin.Context, now time.Time) (start, end time.Time, limited, 
 		return time.Time{}, time.Time{}, false, false
 	}
 	return buckets[0], bucketEnd, true, true
-}
-
-// metricValueExpr 返回统计口径对应的聚合表达式，别名固定为 value
-func metricValueExpr(by string) string {
-	if by == metricByTokens {
-		return "COALESCE(SUM(total_tokens), 0) as value"
-	}
-	return "COUNT(*) as value"
 }
 
 type MetricsRes struct {
@@ -165,54 +139,6 @@ func Metrics(c *gin.Context) {
 		PromptTokens: row.PromptTokens,
 		CachedTokens: row.CachedTokens,
 	})
-}
-
-type Count struct {
-	Model string `json:"model"`
-	Value int64  `json:"value"`
-}
-
-func Counts(c *gin.Context) {
-	by, ok := parseMetricBy(c)
-	if !ok {
-		common.BadRequest(c, "Invalid by parameter: must be 'count' or 'tokens'")
-		return
-	}
-
-	start, end, limited, rangeValid := rangeWindow(c, time.Now())
-	if !rangeValid {
-		common.BadRequest(c, "Invalid range parameter: must be one of today, 24h, 7d, 30d, 90d")
-		return
-	}
-
-	chain := models.DB.
-		Model(&models.ChatLog{}).
-		Select("name as model, " + metricValueExpr(by)).
-		Group("name").
-		Order("value DESC")
-	if limited {
-		chain = chain.Where("created_at >= ? AND created_at < ?", start, end)
-	}
-
-	results := make([]Count, 0)
-	if err := chain.Scan(&results).Error; err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-	const topN = 5
-	if len(results) > topN {
-		var othersValue int64
-		for _, item := range results[topN:] {
-			othersValue += item.Value
-		}
-		othersCount := Count{
-			Model: "others",
-			Value: othersValue,
-		}
-		results = append(results[:topN], othersCount)
-	}
-
-	common.Success(c, results)
 }
 
 type TimelinePoint struct {
@@ -302,104 +228,6 @@ func TimelineModels(c *gin.Context) {
 	common.Success(c, names)
 }
 
-type ProjectCount struct {
-	Project string `json:"project"`
-	Value   int64  `json:"value"`
-}
-
-func ProjectCounts(c *gin.Context) {
-	by, ok := parseMetricBy(c)
-	if !ok {
-		common.BadRequest(c, "Invalid by parameter: must be 'count' or 'tokens'")
-		return
-	}
-
-	start, end, limited, rangeValid := rangeWindow(c, time.Now())
-	if !rangeValid {
-		common.BadRequest(c, "Invalid range parameter: must be one of today, 24h, 7d, 30d, 90d")
-		return
-	}
-
-	type authKeyMetric struct {
-		AuthKeyID uint  `gorm:"column:auth_key_id"`
-		Value     int64 `gorm:"column:value"`
-	}
-
-	chain := models.DB.
-		Model(&models.ChatLog{}).
-		Select("auth_key_id, " + metricValueExpr(by)).
-		Group("auth_key_id").
-		Order("value DESC")
-	if limited {
-		chain = chain.Where("created_at >= ? AND created_at < ?", start, end)
-	}
-
-	rows := make([]authKeyMetric, 0)
-	if err := chain.Scan(&rows).Error; err != nil {
-		common.InternalServerError(c, err.Error())
-		return
-	}
-
-	ids := make([]uint, 0)
-	for _, row := range rows {
-		if row.AuthKeyID == 0 {
-			continue
-		}
-		ids = append(ids, row.AuthKeyID)
-	}
-
-	keys := make([]models.AuthKey, 0)
-	if len(ids) > 0 {
-		if err := models.DB.
-			Model(&models.AuthKey{}).
-			Where("id IN ?", ids).
-			Find(&keys).Error; err != nil {
-			common.InternalServerError(c, err.Error())
-			return
-		}
-	}
-
-	keyMap := make(map[uint]string, len(keys))
-	for _, key := range keys {
-		keyMap[key.ID] = strings.TrimSpace(key.Name)
-	}
-
-	projectValues := make(map[string]int64)
-	for _, row := range rows {
-		project := "-"
-		if row.AuthKeyID == 0 {
-			project = "admin"
-		} else if name, ok := keyMap[row.AuthKeyID]; ok && name != "" {
-			project = name
-		}
-		projectValues[project] += row.Value
-	}
-
-	results := make([]ProjectCount, 0, len(projectValues))
-	for project, value := range projectValues {
-		results = append(results, ProjectCount{
-			Project: project,
-			Value:   value,
-		})
-	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Value > results[j].Value })
-
-	const topN = 5
-	if len(results) > topN {
-		var othersValue int64
-		for _, item := range results[topN:] {
-			othersValue += item.Value
-		}
-		othersCount := ProjectCount{
-			Project: "others",
-			Value:   othersValue,
-		}
-		results = append(results[:topN], othersCount)
-	}
-
-	common.Success(c, results)
-}
-
 type ProviderModelCount struct {
 	Provider      string `json:"provider"`       // 实际供应商名
 	ProviderModel string `json:"provider_model"` // 实际上游模型名
@@ -408,15 +236,77 @@ type ProviderModelCount struct {
 	Others        bool   `json:"others,omitempty"`
 }
 
+// parseUsageFilter 解析分析页那套筛选参数（from/to + provider/model/name/ua/status/key_id）。
+//
+// 只有显式给出 from/to 时才启用：分析页传的是与 /metrics/stats 完全相同的查询串，
+// 因此两边的切片定义必然一致；概览页的旧调用只带 range，走下方 range 分支，
+// 语义不变。第二个返回值表示"是否采用分析页口径"。
+func parseUsageFilter(c *gin.Context) (service.StatsFilter, bool, error) {
+	if strings.TrimSpace(c.Query("from")) == "" && strings.TrimSpace(c.Query("to")) == "" {
+		return service.StatsFilter{}, false, nil
+	}
+	f, err := parseStatsFilter(c)
+	if err != nil {
+		return service.StatsFilter{}, false, err
+	}
+	return f, true, nil
+}
+
+// applyUsageFilter 把筛选条件落到聚合查询上。
+//
+// WHERE 必须与 service.LoadChatLogs 同形（同一批列、同一套精确匹配语义）：
+// 两处口径不一致时，"用量图求和"与"趋势图总数"会给出两个不同的数，而页面
+// 上它们看起来是同一件事。
+func applyUsageFilter(chain *gorm.DB, f service.StatsFilter) *gorm.DB {
+	chain = chain.Where("created_at >= ? AND created_at < ?", f.From, f.To)
+	if len(f.Statuses) > 0 {
+		chain = chain.Where("status IN ?", f.Statuses)
+	}
+	if len(f.KeyIDs) > 0 {
+		chain = chain.Where("auth_key_id IN ?", f.KeyIDs)
+	}
+	for _, cond := range []struct {
+		col  string
+		vals []string
+	}{
+		{"provider_name", f.Providers},
+		{"provider_model", f.Models},
+		{"name", f.Names},
+		{"user_agent", f.UserAgents},
+	} {
+		if len(cond.vals) == 0 {
+			continue
+		}
+		chain = chain.Where(cond.col+" IN ?", cond.vals)
+	}
+	return chain
+}
+
 // ProviderModelUsage 按「实际供应商 + 实际上游模型」聚合 total_tokens 与 cached_tokens。
-// 与 Counts（按用户请求的模型别名 name 分组）互补：那张图看的是调用方要的模型，
+//
+// 与 stats 的 `byModelProvider`（请求名 × 提供商）互补：那个维度看的是调用方要的模型，
 // 这张图看的是真正被路由到的上游，备用关联接管时会体现在这里。
 // 只统计有实际用量的组合（SUM(total_tokens) > 0）；按总 tokens 降序，超出 topN 的合并为一条 others。
+//
+// 时间窗口三选一：显式 from/to（分析页，连同全部维度筛选）> range（概览页旧口径）> 不限时间。
 func ProviderModelUsage(c *gin.Context) {
-	start, end, limited, rangeValid := rangeWindow(c, time.Now())
-	if !rangeValid {
-		common.BadRequest(c, "Invalid range parameter: must be one of today, 24h, 7d, 30d, 90d")
+	chain := models.DB.Model(&models.ChatLog{})
+	f, filtered, err := parseUsageFilter(c)
+	if err != nil {
+		common.BadRequest(c, err.Error())
 		return
+	}
+	if filtered {
+		chain = applyUsageFilter(chain, f)
+	} else {
+		start, end, limited, rangeValid := rangeWindow(c, time.Now())
+		if !rangeValid {
+			common.BadRequest(c, "Invalid range parameter: must be one of today, 24h, 7d, 30d, 90d")
+			return
+		}
+		if limited {
+			chain = chain.Where("created_at >= ? AND created_at < ?", start, end)
+		}
 	}
 
 	type providerModelRow struct {
@@ -426,15 +316,11 @@ func ProviderModelUsage(c *gin.Context) {
 		CachedTokens  int64  `gorm:"column:cached_tokens"`
 	}
 
-	chain := models.DB.
-		Model(&models.ChatLog{}).
+	chain = chain.
 		Select("provider_name as provider, provider_model, COALESCE(SUM(total_tokens), 0) as tokens, " + cachedTokensSumExpr).
 		Group("provider_name, provider_model").
 		Having("SUM(total_tokens) > 0").
 		Order("tokens DESC")
-	if limited {
-		chain = chain.Where("created_at >= ? AND created_at < ?", start, end)
-	}
 
 	rows := make([]providerModelRow, 0)
 	if err := chain.Scan(&rows).Error; err != nil {

@@ -662,7 +662,13 @@ export default function LogsPage() {
                             {rate === null ? (
                               <span className="text-muted-foreground">—</span>
                             ) : (
-                              t("table.cache_value", { percent: rate.toFixed(0), tokens: compactNumber(log.prompt_tokens_details?.cached_tokens ?? 0) })
+                              // 一位小数，且封顶 99.9：cached_tokens === prompt_tokens 时原值就是
+                              // 100，99.95+ 四舍五入也会冒出 100.0——界面上一出现 100%，
+                              // 读者只会当成统计口径坏了，不会当成"全部命中"
+                              t("table.cache_value", {
+                                percent: Math.min(rate, 99.9).toFixed(1),
+                                tokens: compactNumber(log.prompt_tokens_details?.cached_tokens ?? 0),
+                              })
                             )}
                           </TableCell>
                         )

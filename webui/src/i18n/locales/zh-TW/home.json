@@ -118,21 +118,6 @@
     "project_counts": "取得專案呼叫統計失敗: {{message}}"
   },
   "retry": "重試",
-  "charts": {
-    "metric_label": "統計口徑",
-    "by_count": "依次數統計",
-    "by_tokens": "依 Tokens 統計",
-    "metric_count": "呼叫次數",
-    "metric_tokens": "Tokens",
-    "model_pie_count": "模型呼叫次數佔比",
-    "model_pie_tokens": "模型 Tokens 佔比",
-    "model_bar_count": "模型呼叫排行",
-    "model_bar_tokens": "模型 Tokens 排行",
-    "project_pie_count": "專案呼叫次數佔比",
-    "project_pie_tokens": "專案 Tokens 佔比",
-    "project_bar_count": "專案呼叫排行",
-    "project_bar_tokens": "專案 Tokens 排行"
-  },
   "timeline": {
     "title": "Tokens 用量趨勢",
     "model_label": "模型",
@@ -145,13 +130,6 @@
     "range_90d": "最近90天",
     "series_total": "總 Tokens",
     "series_cached": "快取 Tokens",
-    "empty": "此時間範圍內暫無資料"
-  },
-  "provider_model": {
-    "title": "供應商 / 模型 Tokens 用量",
-    "series_total": "總 Tokens",
-    "series_cached": "快取 Tokens",
-    "others": "其他",
     "empty": "此時間範圍內暫無資料"
   }
 }
