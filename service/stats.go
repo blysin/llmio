@@ -414,6 +414,11 @@ type GroupStat struct {
 	AvgProxyMs      float64 `json:"avgProxyMs"`
 	Retries         int64   `json:"retries"`
 	Cost            float64 `json:"cost"`
+
+	// tpsSamples 是 AvgTps 的样本数：成功且 TPS 未超过可信上限的请求。
+	// 不导出、不进 JSON，只在合并同名分组时给 AvgTps 精确加权——
+	// Success 里可能含被剔除的异常样本，不能直接当权重用。
+	tpsSamples int64
 }
 
 // ErrorSample 是一条可点击的错误样本。
@@ -531,6 +536,17 @@ const (
 	topGroupLimit    = 5 // 每个错误类别的"受影响供应商/模型"条数上限，与 dashboard 一致
 )
 
+// maxPlausibleTps 是 TPS 统计的可信上限。超过它的样本几乎都来自计算异常：
+// 流式响应被上游整段缓冲时 chunkTime 接近 0，或上游 usage 失真把非输出
+// token 计进了完成量。日志仍保留原值（日志页照常展示），只是不参与统计。
+const maxPlausibleTps = 500.0
+
+// tpsSample 报告一条日志的 TPS 能否进入统计：只认成功请求，且不超过可信
+// 上限。剔除口径是"大于 500"，500 本身仍算有效样本。
+func tpsSample(l models.ChatLog) bool {
+	return l.Status == consts.StatusSuccess && l.Tps <= maxPlausibleTps
+}
+
 // ---------------------------------------------------------------------------
 // 聚合
 // ---------------------------------------------------------------------------
@@ -542,6 +558,8 @@ const (
 //   - 缓存命中率 = cached / prompt（prompt 为 0 时为 0）
 //   - 分组内延迟分位用最近秩法（Percentile）
 //   - 每个分组与时间序列的时间字段统一用**毫秒**，纳秒按 1e6 换算
+//   - TPS 只统计成功请求，且剔除大于 maxPlausibleTps 的异常样本；
+//     原始日志仍保留记录值，日志页不受影响
 //   - 分组维度与筛选是同一口径：byModel 按 provider_model（上游模型名），
 //     byName 按 name（请求名），筛选也按各自的列精确匹配。点分组名下钻
 //     才会回到「恰好这个组」的行，否则名字与上游 id 不同就筛出 0 行。
@@ -579,6 +597,7 @@ func AggregateWithBucket(logs []models.ChatLog, f StatsFilter, bucket time.Durat
 		proxyMsVals     []float64
 		buckets         = map[int64]*TrendPoint{}
 		bucketOrder     []int64
+		tpsSeen         = map[int64]int64{}
 		models          = newGroupAcc()
 		providers       = newGroupAcc()
 		modelProviders  = newGroupAcc()
@@ -627,8 +646,10 @@ func AggregateWithBucket(logs []models.ChatLog, f StatsFilter, bucket time.Durat
 		if l.Status == consts.StatusSuccess {
 			// 只在成功请求上统计延迟与 TPS，失败/在途的耗时没有比较意义
 			firstChunkSecs = append(firstChunkSecs, fcMs/1000)
-			tpsVals = append(tpsVals, l.Tps)
 			proxyMsVals = append(proxyMsVals, pxMs)
+			if tpsSample(l) {
+				tpsVals = append(tpsVals, l.Tps)
+			}
 		}
 
 		// ---- 时间序列 ----
@@ -653,7 +674,11 @@ func AggregateWithBucket(logs []models.ChatLog, f StatsFilter, bucket time.Durat
 		p.Completion += l.CompletionTokens
 		p.Cached += l.PromptTokensDetails.CachedTokens
 		p.Cost += Cost(l)
-		p.AvgTps += l.Tps
+		if tpsSample(l) {
+			p.AvgTps += l.Tps
+			tpsSeen[tsKey]++
+		}
+		// 首包耗时仍按桶内全部请求平均（与旧口径一致），只有 TPS 需要剔除异常样本
 		p.AvgFirstChunkMs += fcMs
 
 		// ---- 分组 ----
@@ -725,8 +750,10 @@ func AggregateWithBucket(logs []models.ChatLog, f StatsFilter, bucket time.Durat
 			Error:           l.Error,
 			Retry:           l.Retry,
 		}
-		if l.Status == consts.StatusSuccess {
+		if tpsSample(l) {
 			leaderTps = append(leaderTps, row)
+		}
+		if l.Status == consts.StatusSuccess {
 			leaderSlow = append(leaderSlow, row)
 		}
 		if l.Status == consts.StatusError {
@@ -745,8 +772,11 @@ func AggregateWithBucket(logs []models.ChatLog, f StatsFilter, bucket time.Durat
 	for _, ts := range bucketOrder {
 		p := buckets[ts]
 		if p.Total > 0 {
-			p.AvgTps = p.AvgTps / float64(p.Total)
 			p.AvgFirstChunkMs = p.AvgFirstChunkMs / float64(p.Total)
+		}
+		// TPS 均值只除以有效样本数：异常样本不参与分子，也不能留在分母里
+		if seen := tpsSeen[ts]; seen > 0 {
+			p.AvgTps = p.AvgTps / float64(seen)
 		}
 		res.Trend = append(res.Trend, *p)
 	}
@@ -910,6 +940,7 @@ type groupAcc struct {
 type groupItem struct {
 	stat        GroupStat
 	tpsSum      float64
+	tpsSeen     int64
 	firstChunk  []float64
 	proxySum    float64
 	firstSum    float64
@@ -977,16 +1008,19 @@ func (a *groupAcc) count(it *groupItem, l models.ChatLog) {
 	s.Cached += l.PromptTokensDetails.CachedTokens
 	s.Retries += int64(l.Retry)
 	s.Cost += Cost(l)
-	if l.Tps > s.MaxTps {
+	if l.Tps <= maxPlausibleTps && l.Tps > s.MaxTps {
 		s.MaxTps = l.Tps
 	}
 	if l.Status == consts.StatusSuccess {
 		it.successSeen++
-		it.tpsSum += l.Tps
 		fc := durationToMs(l.FirstChunkTime)
 		it.firstSum += fc
 		it.firstChunk = append(it.firstChunk, fc)
 		it.proxySum += durationToMs(l.ProxyTime)
+	}
+	if tpsSample(l) {
+		it.tpsSeen++
+		it.tpsSum += l.Tps
 	}
 }
 
@@ -998,10 +1032,13 @@ func (a *groupAcc) result() []GroupStat {
 		s.SuccessRate = ratio(s.Success, s.Success+s.Error) * 100
 		s.CacheHitRate = ratio(s.Cached, s.Prompt) * 100
 		if it.successSeen > 0 {
-			s.AvgTps = it.tpsSum / float64(it.successSeen)
 			s.AvgFirstChunkMs = it.firstSum / float64(it.successSeen)
 			s.AvgProxyMs = it.proxySum / float64(it.successSeen)
 		}
+		if it.tpsSeen > 0 {
+			s.AvgTps = it.tpsSum / float64(it.tpsSeen)
+		}
+		s.tpsSamples = it.tpsSeen
 		SortFloats(it.firstChunk)
 		s.P95FirstChunkMs = Percentile(it.firstChunk, 0.95)
 		out = append(out, s)
@@ -1275,16 +1312,18 @@ func resolveKeyGroups(ctx context.Context, res *StatsResult) {
 // mergeGroupStats 合并两个同名分组。
 //
 // 计数类直接相加；比率类**从合并后的计数重算**（不能对两个比率取平均）；
-// 均值类按成功请求数加权——GroupStat 的成功数正是这些均值的原分母，
-// 因此可以精确还原。
+// 均值类按各自的样本数加权——首包/代理耗时以成功请求为分母（GroupStat.Success
+// 正是它），TPS 则以过滤后的有效样本数（GroupStat.tpsSamples）为分母，
+// 不能用成功数代替：剔除的异常样本仍留在 Success 里。
 //
 // P95 无法精确合并：它由原始样本的最近秩算出，合并后需要全部样本才能重算，
 // 而分组里只留了分位值。此处取两者较大值作为**上界**，宁可略保守也不谎报。
 func mergeGroupStats(a, b GroupStat) GroupStat {
-	// 先记下 a 原来的成功数：下方的均值加权需要它，
-	// 而 a.Success 紧接着就会被合并值覆盖。不用"先加后减"来还原——
+	// 先记下 a 原来的计数：下方的均值加权需要它，
+	// 而 a 的计数字段紧接着就会被合并值覆盖。不用"先加后减"来还原——
 	// 那依赖求值顺序，改动一处就会静默算错。
 	aSuccess := a.Success
+	aTpsSamples := a.tpsSamples
 
 	a.Total += b.Total
 	a.Success += b.Success
@@ -1296,11 +1335,12 @@ func mergeGroupStats(a, b GroupStat) GroupStat {
 	a.Cached += b.Cached
 	a.Retries += b.Retries
 	a.Cost += b.Cost
+	a.tpsSamples += b.tpsSamples
 
 	a.SuccessRate = ratio(a.Success, a.Success+a.Error) * 100
 	a.CacheHitRate = ratio(a.Cached, a.Prompt) * 100
 
-	a.AvgTps = weightedMean(a.AvgTps, aSuccess, b.AvgTps, b.Success)
+	a.AvgTps = weightedMean(a.AvgTps, aTpsSamples, b.AvgTps, b.tpsSamples)
 	a.AvgFirstChunkMs = weightedMean(a.AvgFirstChunkMs, aSuccess, b.AvgFirstChunkMs, b.Success)
 	a.AvgProxyMs = weightedMean(a.AvgProxyMs, aSuccess, b.AvgProxyMs, b.Success)
 

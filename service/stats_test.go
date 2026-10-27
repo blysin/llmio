@@ -705,8 +705,9 @@ func TestAggregateTrendBuckets(t *testing.T) {
 	if res.Trend[0].Cached != 0 {
 		t.Fatalf("桶 1 缓存读应为 0，实得 %d", res.Trend[0].Cached)
 	}
-	if diff := res.Trend[0].AvgTps - 5; diff > 1e-9 || diff < -1e-9 {
-		t.Fatalf("桶 1 平均 TPS 应为 (10+0)/2=5，实得 %v", res.Trend[0].AvgTps)
+	// TPS 均值只取成功样本（失败请求没有吞吐可言），(10)/1=10
+	if diff := res.Trend[0].AvgTps - 10; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("桶 1 平均 TPS 应为 10，实得 %v", res.Trend[0].AvgTps)
 	}
 	if diff := res.Trend[0].AvgFirstChunkMs - 50; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("桶 1 平均首包应为 (100+0)/2=50ms，实得 %v", res.Trend[0].AvgFirstChunkMs)
@@ -1416,6 +1417,109 @@ func TestAggregateLeaderboardLimit(t *testing.T) {
 	}
 	if len(res.Slowest) != leaderboardLimit {
 		t.Fatalf("最慢榜上限应为 %d，实得 %d", leaderboardLimit, len(res.Slowest))
+	}
+}
+
+// TPS > 500 基本都来自计算异常（如上游把整段 SSE 缓冲后 chunkTime 归零，
+// 或 usage 把非输出 token 计进完成量）。这类样本不能参与任何统计，
+// 但原始日志里的值必须保留，日志页仍按原值展示。
+func TestAggregateExcludesImplausibleTps(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	mk := func(id uint, status string, tps float64) models.ChatLog {
+		l := logAt(id, base, status)
+		l.Tps = tps
+		return l
+	}
+	logs := []models.ChatLog{
+		mk(1, consts.StatusSuccess, 10),
+		mk(2, consts.StatusSuccess, 500), // 边界：等于 500 仍是有效样本
+		mk(3, consts.StatusSuccess, 501),
+		mk(4, consts.StatusSuccess, 999),
+		mk(5, consts.StatusError, 600), // 失败请求本就不计入 TPS
+	}
+
+	res := AggregateWithBucket(logs, StatsFilter{}, time.Hour)
+
+	// 分布只留 10 与 500
+	want := []float64{10, 500}
+	got := res.Latency.Tps.List
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("TPS 分布应只含 %v，实得 %v", want, got)
+	}
+	if res.Latency.Tps.Max != 500 {
+		t.Fatalf("TPS 最大值应为 500，实得 %v", res.Latency.Tps.Max)
+	}
+	if diff := res.Latency.Tps.Avg - 255; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("TPS 均值应为 (10+500)/2=255，实得 %v", res.Latency.Tps.Avg)
+	}
+
+	// 趋势均值同样只按有效样本平均
+	if len(res.Trend) != 1 || res.Trend[0].AvgTps != 255 {
+		t.Fatalf("趋势平均 TPS 应为 255，实得 %+v", res.Trend)
+	}
+
+	// 分组均值/峰值不包含 501/999，但成功计数照常
+	if len(res.ByName) != 1 {
+		t.Fatalf("应只有 1 个分组，实得 %+v", res.ByName)
+	}
+	g := res.ByName[0]
+	if g.Success != 4 {
+		t.Fatalf("成功计数不应受 TPS 过滤影响，实得 %d", g.Success)
+	}
+	if g.AvgTps != 255 || g.MaxTps != 500 {
+		t.Fatalf("分组 TPS 统计应剔除异常样本：%+v", g)
+	}
+	if g.tpsSamples != 2 {
+		t.Fatalf("分组有效 TPS 样本数应为 2，实得 %d", g.tpsSamples)
+	}
+
+	// TPS 榜只列 2、1，且行内保留原始值
+	if len(res.TopTps) != 2 || res.TopTps[0].ID != 2 || res.TopTps[1].ID != 1 {
+		t.Fatalf("TPS 榜应只含 2、1，实得 %+v", res.TopTps)
+	}
+	if res.TopTps[0].Tps != 500 {
+		t.Fatalf("榜上行应保留原始 TPS，实得 %v", res.TopTps[0].Tps)
+	}
+
+	// 聚合不得改写原始日志
+	if logs[3].Tps != 999 {
+		t.Fatalf("聚合不应修改原始日志，实得 %v", logs[3].Tps)
+	}
+}
+
+// 整组都是异常样本时，TPS 均值/峰值保持 0（前端把 0 视为"没有样本"），
+// 不能写成 0 以外的读数，也不能混进排行榜。
+func TestAggregateAllImplausibleTpsLeavesNoSample(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	a := logAt(1, base, consts.StatusSuccess)
+	a.Tps = 800
+	b := logAt(2, base, consts.StatusSuccess)
+	b.Tps = 1200
+
+	res := AggregateWithBucket([]models.ChatLog{a, b}, StatsFilter{}, time.Hour)
+
+	if len(res.TopTps) != 0 {
+		t.Fatalf("应没有可上榜的 TPS 样本，实得 %+v", res.TopTps)
+	}
+	if len(res.Latency.Tps.List) != 0 {
+		t.Fatalf("TPS 分布应为空，实得 %v", res.Latency.Tps.List)
+	}
+	if len(res.Trend) != 1 || res.Trend[0].AvgTps != 0 {
+		t.Fatalf("无有效样本时桶均值应为 0，实得 %+v", res.Trend)
+	}
+	if len(res.ByName) != 1 {
+		t.Fatalf("应只有 1 个分组，实得 %+v", res.ByName)
+	}
+	g := res.ByName[0]
+	if g.Success != 2 {
+		t.Fatalf("成功计数不应受 TPS 过滤影响，实得 %d", g.Success)
+	}
+	if g.AvgTps != 0 || g.MaxTps != 0 || g.tpsSamples != 0 {
+		t.Fatalf("无有效样本时分组 TPS 应保持 0：%+v", g)
 	}
 }
 
@@ -2184,12 +2288,14 @@ func TestResolveKeyGroupsMergesSameName(t *testing.T) {
 			Total: 3, Success: 2, Error: 1, Prompt: 100, Completion: 10,
 			TotalTokens: 110, Cached: 40, Retries: 1, Cost: 1.5,
 			AvgTps: 10, AvgFirstChunkMs: 100, AvgProxyMs: 200, MaxTps: 30, P95FirstChunkMs: 300,
+			tpsSamples: 2,
 		},
 		{
 			Name:  strconv.FormatUint(uint64(b.ID), 10),
 			Total: 5, Success: 4, Error: 1, Prompt: 300, Completion: 30,
 			TotalTokens: 330, Cached: 60, Retries: 2, Cost: 2.5,
 			AvgTps: 20, AvgFirstChunkMs: 200, AvgProxyMs: 400, MaxTps: 50, P95FirstChunkMs: 250,
+			tpsSamples: 4,
 		},
 	}}
 	resolveKeyGroups(ctx, res)
@@ -2223,9 +2329,9 @@ func TestResolveKeyGroupsMergesSameName(t *testing.T) {
 	if diff := g.CacheHitRate - 25; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("缓存命中率应重算为 25，实得 %v", g.CacheHitRate)
 	}
-	// 均值按成功数加权：(10*2 + 20*4)/6 = 16.67
+	// 均值按各自样本数加权（此例有效 TPS 样本数恰等于成功数）：(10*2 + 20*4)/6 = 16.67
 	if diff := g.AvgTps - 100.0/6.0; diff > 1e-9 || diff < -1e-9 {
-		t.Fatalf("平均 TPS 应按成功数加权，实得 %v", g.AvgTps)
+		t.Fatalf("平均 TPS 应按有效样本数加权，实得 %v", g.AvgTps)
 	}
 	// (100*2 + 200*4)/6 = 1000/6
 	if diff := g.AvgFirstChunkMs - 1000.0/6.0; diff > 1e-9 || diff < -1e-9 {
@@ -2317,5 +2423,28 @@ func TestMergeGroupStatsTakesLargerMaxima(t *testing.T) {
 	}
 	if got.P95FirstChunkMs != 999 {
 		t.Fatalf("P95 应取上界 999，实得 %v", got.P95FirstChunkMs)
+	}
+}
+
+// TPS 均值的分母是过滤后的有效样本数，可能少于成功数：若按 Success 加权，
+// 被剔除的异常样本会通过权重"复活"，污染合并结果。
+func TestMergeGroupStatsWeightsTpsBySampleCount(t *testing.T) {
+	t.Parallel()
+
+	// a 有 2 条成功但只有 1 条有效 TPS；b 有 4 条成功、3 条有效。
+	a := GroupStat{Success: 2, tpsSamples: 1, AvgTps: 10, AvgFirstChunkMs: 100}
+	b := GroupStat{Success: 4, tpsSamples: 3, AvgTps: 20, AvgFirstChunkMs: 200}
+	got := mergeGroupStats(a, b)
+
+	// (10*1 + 20*3)/4 = 17.5
+	if diff := got.AvgTps - 17.5; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("TPS 应按有效样本数加权得 17.5，实得 %v", got.AvgTps)
+	}
+	// 首包仍按成功数加权：(100*2 + 200*4)/6 = 1000/6
+	if diff := got.AvgFirstChunkMs - 1000.0/6.0; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("首包应按成功数加权，实得 %v", got.AvgFirstChunkMs)
+	}
+	if got.tpsSamples != 4 {
+		t.Fatalf("有效样本数应合并为 4，实得 %d", got.tpsSamples)
 	}
 }
