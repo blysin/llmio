@@ -100,6 +100,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
+# 构建前同步远端 tag（--prune-tags 清理本地已删除的远端 tag）
+# 必须放在「版本号推导」之前，否则版本推导仍会基于过期的本地 tag。
+# 离线 / 无 remote / fetch 失败时仅告警，不阻断构建（沿用本地已有 tag）。
+# ---------------------------------------------------------------------------
+echo "[0/4] git fetch --tags --prune-tags ..."
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if git remote | grep -q .; then
+    if git fetch --tags --prune-tags 2>/dev/null; then
+      echo "      ✓ 已同步远端 tags"
+    else
+      echo "      ⚠ 同步远端 tags 失败（可能离线），沿用本地已有 tag" >&2
+    fi
+  else
+    echo "      - 无 remote，跳过 fetch"
+  fi
+else
+  echo "      - 非 git 仓库，跳过 fetch"
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # 版本号推导：不传则直接复用本地最高 semver tag（不递增，可重复构建覆盖）
 # ---------------------------------------------------------------------------
 BASE_TAG=""
