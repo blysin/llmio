@@ -75,7 +75,9 @@ export const LOG_COLUMNS: readonly LogColumn[] = [
   { id: "size", labelKey: "table.size", defaultVisible: true, cellClass: "reading text-xs text-muted-foreground", value: (l) => (l.Size ? formatBytes(l.Size) : "-") },
   { id: "duration", labelKey: "table.duration", defaultVisible: true, cellClass: "reading text-xs", value: (l) => formatDurationNs(l.ChunkTime + l.FirstChunkTime + l.ProxyTime) },
   // 首字时延单列：duration 是「首字 + 生成 + 代理」的合计，排查首字慢时要单独看
-  { id: "first_chunk_time", labelKey: "table.first_chunk_time", cellClass: "reading text-xs", value: (l) => (l.FirstChunkTime ? formatDurationNs(l.FirstChunkTime) : "-") },
+  { id: "first_chunk_time", labelKey: "table.first_chunk_time", defaultVisible: true, cellClass: "reading text-xs", value: (l) => (l.FirstChunkTime ? formatDurationNs(l.FirstChunkTime) : "-") },
+  // TPS：生成阶段吞吐，和首字延迟挨着放，才能一眼区分"首字慢"还是"生成慢"
+  { id: "tps", labelKey: "table.tps", defaultVisible: true, cellClass: "reading text-xs", value: (l) => formatTps(l.Tps) },
   { id: "model", labelKey: "table.model", defaultVisible: true, cellClass: "max-w-[140px] truncate text-xs", value: (l) => l.ProviderModel },
   { id: "type", labelKey: "table.type", defaultVisible: true, cellClass: "text-xs", value: (l) => l.Style },
   { id: "provider", labelKey: "table.provider", defaultVisible: true, cellClass: "max-w-[120px] truncate text-xs", value: (l) => l.ProviderName },
@@ -86,7 +88,6 @@ export const LOG_COLUMNS: readonly LogColumn[] = [
   // ── 候选列（已入库、默认隐藏）──
   { id: "trace_id", labelKey: "table.trace_id", cellClass: "max-w-[120px] truncate font-mono text-xs", value: (l) => l.TraceID || "-" },
   { id: "session_id", labelKey: "table.session_id", cellClass: "max-w-[120px] truncate font-mono text-xs", value: (l) => l.SessionID || "-" },
-  { id: "tps", labelKey: "table.tps", cellClass: "reading text-xs", value: (l) => formatTps(l.Tps) },
   { id: "cost", labelKey: "table.cost", cellClass: "reading text-xs", value: (l) => formatCost(computeCost(l), l.currency) },
   { id: "retry", labelKey: "table.retry", cellClass: "reading text-xs", value: (l) => (l.Retry > 0 ? String(l.Retry) : "-") },
   { id: "remote_ip", labelKey: "table.remote_ip", cellClass: "max-w-[120px] truncate font-mono text-xs", value: (l) => l.RemoteIP || "-" },

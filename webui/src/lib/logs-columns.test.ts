@@ -378,7 +378,7 @@ describe("column registry", () => {
   })
 
   it("候选列有默认隐藏标记", () => {
-    const candidates = ["trace_id", "session_id", "tps", "cost", "retry", "remote_ip", "user_agent", "upstream_style", "bridge_notes"]
+    const candidates = ["trace_id", "session_id", "cost", "retry", "remote_ip", "user_agent", "upstream_style", "bridge_notes"]
     for (const id of candidates) {
       const col = LOG_COLUMNS.find((c) => c.id === id)
       expect(col).toBeDefined()
