@@ -49,7 +49,9 @@ type builtinSpec struct {
 
 // builtinRegistry 是内置适配器注册表。
 //
-// 顺序即前端展示顺序：先已实测的，再未实测的，最后是通用占位。
+// 顺序即前端展示顺序：已实测的靠前，通用占位垫底；
+// 同一家供应商的几种鉴权方式（opencode 的登录型与 API Key 型）挨着放，
+// 用户在下拉里找的是"这家"，不是"这一档"。
 var builtinRegistry = []builtinSpec{
 	{
 		info: BuiltinInfo{
@@ -88,6 +90,16 @@ var builtinRegistry = []builtinSpec{
 			DefaultPath:    "/console/api/go/status",
 			NeedsLogin:     true,
 			EnvKeys:        []string{"OPENCODE_COOKIE", "OPENCODE_ORG_ID"},
+		},
+		defaultTimeout: 20 * time.Second,
+	},
+	{
+		info: BuiltinInfo{
+			ID: "opencode-key", Label: "opencode.ai 套餐（API Key）", Verified: true,
+			Doc: "GET {base}/usage。Bearer API Key 鉴权，出 5 小时 / 每周 / 每月三档已用百分比；" +
+				"base_url 用 https://opencode.ai/zen/go/v1",
+			DefaultBaseURL: "https://opencode.ai/zen/go/v1",
+			DefaultPath:    "/usage",
 		},
 		defaultTimeout: 20 * time.Second,
 	},
@@ -177,6 +189,8 @@ func RunBuiltin(cfg BuiltinConfig, client *http.Client) (*HTTPAdapterResult, err
 		return runSCNet(cfg, base)
 	case "opencode":
 		return runOpencode(cfg, base)
+	case "opencode-key":
+		return runOpencodeKey(cfg, base)
 	case "commandcode":
 		return runCommandCode(cfg, base)
 	}

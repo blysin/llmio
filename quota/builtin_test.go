@@ -31,7 +31,7 @@ func TestListBuiltins(t *testing.T) {
 	for _, b := range list {
 		byID[b.ID] = b
 	}
-	for _, want := range []string{"deepseek", "moonshot", "scnet", "opencode", "commandcode", "custom"} {
+	for _, want := range []string{"deepseek", "moonshot", "scnet", "opencode", "opencode-key", "commandcode", "custom"} {
 		if _, ok := byID[want]; !ok {
 			t.Fatalf("缺少内置适配器 %q", want)
 		}
@@ -50,6 +50,15 @@ func TestListBuiltins(t *testing.T) {
 	// commandcode 走 API Key 鉴权，既不是登录型也不是通用占位
 	if byID["commandcode"].Generic || byID["commandcode"].NeedsLogin {
 		t.Fatal("commandcode 不应标记 Generic/NeedsLogin")
+	}
+	// opencode-key 是同一个套餐的另一条鉴权路：用 API Key，不要会话。
+	// 标成登录型会让前端去渲染 env 输入框，而它一个 env 都不读。
+	key := byID["opencode-key"]
+	if key.Generic || key.NeedsLogin || len(key.EnvKeys) > 0 {
+		t.Fatalf("opencode-key 不应是登录型/通用占位: %#v", key)
+	}
+	if key.DefaultBaseURL == "" || key.DefaultPath == "" {
+		t.Fatalf("opencode-key 应有默认 base 与路径，否则前端只能靠猜: %#v", key)
 	}
 }
 
@@ -2325,4 +2334,341 @@ func TestEncryptPasswordWithKeyErrors(t *testing.T) {
 			t.Fatalf("超长明文应报错，实得 %v", err)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// opencode（API Key）
+// ---------------------------------------------------------------------------
+
+// 载荷形状取自 providers/usage.go 的 openCodeUsageResponse——供应商管理页
+// 用同一个端点（{base}/usage，Bearer API Key）对真上游跑通了这三个窗口，
+// 这里把它落到余量契约上。percent 是**已用**百分比，0-100。
+const opencodeKeyUsagePayload = `{"usage":{` +
+	`"rolling":{"status":"ok","percent":12.5,"resetsAt":"2026-10-30T14:20:33.000Z"},` +
+	`"weekly":{"status":"ok","percent":40.25,"resetsAt":"2026-11-02T00:00:00.000Z"},` +
+	`"monthly":{"status":"exceeded","percent":100,"resetsAt":"2026-11-20T06:05:41.000Z"}}}`
+
+// newOpencodeKeyServer 起一个只提供用量端点的假上游，并记录每次请求。
+func newOpencodeKeyServer(t *testing.T, body string, status int) (*httptest.Server, <-chan commandCodeHit) {
+	t.Helper()
+	hits := make(chan commandCodeHit, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- commandCodeHit{Path: r.URL.Path, Auth: r.Header.Get("Authorization")}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, hits
+}
+
+// opencodeKeyUsageFixture 返回真实载荷解析出的 any。
+func opencodeKeyUsageFixture(t *testing.T) any {
+	t.Helper()
+	return parseJSONAny(t, opencodeKeyUsagePayload)
+}
+
+func TestRunOpencodeKeyEndToEnd(t *testing.T) {
+	srv, hits := newOpencodeKeyServer(t, opencodeKeyUsagePayload, 200)
+
+	res, err := RunBuiltin(BuiltinConfig{
+		BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "sk-opencode-test",
+	}, nil)
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(res.Items) != 3 {
+		t.Fatalf("应得 3 条（5 小时/每周/每月），实得 %d：%#v", len(res.Items), res.Items)
+	}
+
+	got := drainCommandCodeHits(hits)
+	if len(got) != 1 {
+		t.Fatalf("只应打一个端点，实得 %d 次请求：%#v", len(got), got)
+	}
+	if got[0].Path != opencodeKeyDefaultPath {
+		t.Fatalf("请求路径不符: %q", got[0].Path)
+	}
+	if got[0].Auth != "Bearer sk-opencode-test" {
+		t.Fatalf("鉴权头不符: %q", got[0].Auth)
+	}
+
+	// Raw 原样带回上游响应，试跑面板靠它排查"为什么少了一档"
+	raw, ok := res.Raw.(map[string]any)
+	if !ok {
+		t.Fatalf("Raw 应是对象: %#v", res.Raw)
+	}
+	if _, ok := raw["usage"]; !ok {
+		t.Fatalf("Raw 里应保留 usage: %#v", raw)
+	}
+}
+
+func TestRunOpencodeKeyMissingAPIKey(t *testing.T) {
+	_, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: "http://127.0.0.1:1"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "apiKey") {
+		t.Fatalf("缺 API Key 应报错并指明填在哪，实得 %v", err)
+	}
+}
+
+func TestRunOpencodeKeyCustomPath(t *testing.T) {
+	srv, hits := newOpencodeKeyServer(t, opencodeKeyUsagePayload, 200)
+
+	if _, err := RunBuiltin(BuiltinConfig{
+		BuiltinID: "opencode-key", BaseURL: srv.URL + "/", APIKey: "k", Path: "v2/quota",
+	}, nil); err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	got := drainCommandCodeHits(hits)
+	if len(got) != 1 || got[0].Path != "/v2/quota" {
+		t.Fatalf("path 覆盖未生效: %#v", got)
+	}
+}
+
+func TestRunOpencodeKeyUpstreamErrorHints(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"401 指向密钥", 401, "API Key 无效"},
+		{"403 指向密钥", 403, "API Key 无效"},
+		{"404 指向 base_url", 404, "/zen/go/v1"},
+		{"429 指向刷新间隔", 429, "刷新间隔"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv, _ := newOpencodeKeyServer(t, `{"error":"nope"}`, c.status)
+			_, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k"}, nil)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("应给出「%s」提示，实得 %v", c.want, err)
+			}
+		})
+	}
+}
+
+func TestRunOpencodeKeyNonJSONResponse(t *testing.T) {
+	srv, _ := newOpencodeKeyServer(t, `<html>login</html>`, 200)
+	_, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "响应不是 JSON") {
+		t.Fatalf("非 JSON 响应应报错，实得 %v", err)
+	}
+}
+
+func TestOpencodeKeyBuildItems(t *testing.T) {
+	items, err := opencodeKeyBuildItems(opencodeKeyUsageFixture(t))
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("应得 3 条，实得 %d：%#v", len(items), items)
+	}
+
+	want := []struct {
+		id      string
+		percent float64
+		window  Window
+	}{
+		{"rolling", 12.5, Window5h},
+		{"weekly", 40.25, WindowWeek},
+		{"monthly", 100, WindowMonth},
+	}
+	for i, w := range want {
+		row := items[i]
+		if row["id"] != w.id || row["window"] != string(w.window) {
+			t.Fatalf("第 %d 行身份不符: %#v", i, row)
+		}
+		if row["unit"] != string(UnitPercent) {
+			t.Fatalf("第 %d 行单位应为百分比: %#v", i, row)
+		}
+		// 必须已是解引用后的 float64，否则契约认不出来、整条被丢
+		p, ok := row["percent"].(float64)
+		if !ok || !closeTo(p, w.percent) {
+			t.Fatalf("第 %d 行百分比不符: %#v", i, row["percent"])
+		}
+		if row["resetAt"] == nil || row["resetAt"] == "" {
+			t.Fatalf("第 %d 行应带上游的重置时间: %#v", i, row)
+		}
+	}
+
+	// 只有超额那行携带显式状态；ok 那两行留空，交给阈值判（见 opencodeKeyStatus）
+	if items[2]["status"] != string(StatusExhausted) {
+		t.Fatalf("exceeded 应映射成用尽: %#v", items[2])
+	}
+	if items[0]["status"] != nil || items[1]["status"] != nil {
+		t.Fatalf("ok 不该写成显式状态，否则阈值告警会被吃掉: %#v %#v", items[0], items[1])
+	}
+}
+
+func TestOpencodeKeyBuildItemsSkipsUnusableWindows(t *testing.T) {
+	// 上游对没用到的窗口给 null，对用不到的档不给 percent：
+	// 这些是「没有这一档」，不是「用了 0」，硬凑会让面板显示假满格。
+	data := parseJSONAny(t, `{"usage":{
+		"rolling":{"status":"ok","resetsAt":"2026-10-30T14:20:33.000Z"},
+		"weekly":{"status":"ok","percent":7.5,"resetsAt":"2026-11-02T00:00:00.000Z"},
+		"monthly":null}}`)
+	items, err := opencodeKeyBuildItems(data)
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if len(items) != 1 || items[0]["id"] != "weekly" {
+		t.Fatalf("应只出每周那一档，实得 %#v", items)
+	}
+}
+
+func TestOpencodeKeyBuildItemsErrors(t *testing.T) {
+	t.Run("响应不是对象", func(t *testing.T) {
+		_, err := opencodeKeyBuildItems(parseJSONAny(t, `[1,2]`))
+		if err == nil || !strings.Contains(err.Error(), "不是对象") {
+			t.Fatalf("应报响应形状不符，实得 %v", err)
+		}
+	})
+
+	t.Run("缺 usage", func(t *testing.T) {
+		_, err := opencodeKeyBuildItems(parseJSONAny(t, `{"plan":"go"}`))
+		if err == nil || !strings.Contains(err.Error(), "没有 usage") {
+			t.Fatalf("应报缺 usage 并提示 base_url，实得 %v", err)
+		}
+	})
+
+	t.Run("三档都没有 percent", func(t *testing.T) {
+		_, err := opencodeKeyBuildItems(parseJSONAny(t, `{"usage":{"rolling":{},"weekly":null}}`))
+		if err == nil || !strings.Contains(err.Error(), "没有 percent") {
+			t.Fatalf("应报没有可识别的用量，实得 %v", err)
+		}
+	})
+}
+
+func TestOpencodeKeyStatus(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"", ""},
+		// ok 刻意不透传：契约优先采用上游显式状态，照搬会让 95% 的窗口恒显正常
+		{"ok", ""},
+		{"normal", ""},
+		{"exceeded", string(StatusExhausted)},
+		{"EXCEEDED", string(StatusExhausted)},
+		{"exhausted", string(StatusExhausted)},
+		{"depleted", string(StatusExhausted)},
+		{"warning", string(StatusWarning)},
+		{"whatever", ""},
+	}
+	for _, c := range cases {
+		if got := opencodeKeyStatus(c.raw); got != c.want {
+			t.Fatalf("opencodeKeyStatus(%q) = %q，期望 %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestOpencodeKeyStatusHintUnknownCode(t *testing.T) {
+	if got := opencodeKeyStatusHint("请求失败: dial tcp"); got != "" {
+		t.Fatalf("网络类错误不该被硬造提示，实得 %q", got)
+	}
+}
+
+// 契约互锁：只给百分比的行必须被补成 used/total/remaining 同构，
+// 否则进度条、阈值与"最差条目"摘要都会哑掉。
+func TestRunOpencodeKeyNormalizes(t *testing.T) {
+	srv, _ := newOpencodeKeyServer(t, opencodeKeyUsagePayload, 200)
+	res, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k"}, nil)
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+
+	items, err := Normalize(res.Items, NormalizeOptions{WarningAt: 80})
+	if err != nil {
+		t.Fatalf("适配器产出应能被契约归一: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("应归一出 3 条，实得 %d", len(items))
+	}
+
+	rolling := items[0]
+	if rolling.Unit != UnitPercent || rolling.Window != Window5h {
+		t.Fatalf("单位/窗口不符: %#v", rolling)
+	}
+	if rolling.Percent == nil || rolling.Used == nil || rolling.Total == nil || rolling.Remaining == nil {
+		t.Fatalf("百分比行应补齐四个分量: %#v", rolling)
+	}
+	if !closeTo(*rolling.Percent, 12.5) || !closeTo(*rolling.Total, 100) ||
+		!closeTo(*rolling.Remaining, 87.5) {
+		t.Fatalf("分量不符: percent=%v total=%v remaining=%v",
+			*rolling.Percent, *rolling.Total, *rolling.Remaining)
+	}
+	if rolling.Text != "87.5%" {
+		t.Fatalf("展示文本应报剩余百分比，实得 %q", rolling.Text)
+	}
+	if rolling.Status != StatusOK {
+		t.Fatalf("已用 12.5%% 应判 OK，实得 %q", rolling.Status)
+	}
+	if want := "2026-10-30T14:20:33Z"; rolling.ResetAt != want {
+		t.Fatalf("resetAt 应归一成 %s，实得 %q", want, rolling.ResetAt)
+	}
+
+	// 40.25% 低于阈值 80 → 仍判 OK；超额那行由上游显式判满
+	if weekly := items[1]; weekly.Status != StatusOK || !closeTo(*weekly.Percent, 40.25) {
+		t.Fatalf("每周行不符: %#v", weekly)
+	}
+	monthly := items[2]
+	if monthly.Status != StatusExhausted || monthly.Text != "0.0%" {
+		t.Fatalf("月度行应判用尽并报 0%% 剩余，实得 %#v %q", monthly.Status, monthly.Text)
+	}
+	if worst := WorstStatus(items); worst != StatusExhausted {
+		t.Fatalf("整源最差状态应是用尽，实得 %q", worst)
+	}
+}
+
+// 阈值告警要能穿透"上游没说超额"这一档：已用 85% 且 warningAt=80 时应告警。
+func TestRunOpencodeKeyWarningThreshold(t *testing.T) {
+	srv, _ := newOpencodeKeyServer(t,
+		`{"usage":{"rolling":{"status":"ok","percent":85,"resetsAt":"2026-10-30T14:20:33.000Z"}}}`, 200)
+	res, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k"}, nil)
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	items, err := Normalize(res.Items, NormalizeOptions{WarningAt: 80})
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if items[0].Status != StatusWarning {
+		t.Fatalf("已用 85%% 应告警，实得 %q", items[0].Status)
+	}
+}
+
+// 超时配置的两个分支：显式给足秒数要能取到数；亚秒级配置要被抬到 1 秒下限，
+// 否则刷新间隔被调到极小值时每次取数都会必然超时。
+func TestRunOpencodeKeyTimeoutConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte(opencodeKeyUsagePayload))
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := RunBuiltin(BuiltinConfig{
+		BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k", TimeoutMs: 5000,
+	}, nil); err != nil {
+		t.Fatalf("给足超时应能取到数: %v", err)
+	}
+	if _, err := RunBuiltin(BuiltinConfig{
+		BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k", TimeoutMs: 1,
+	}, nil); err != nil {
+		t.Fatalf("TimeoutMs=1 应被抬到 1 秒而不是当成 1 毫秒，实得 %v", err)
+	}
+}
+
+func TestRunOpencodeKeyTransportError(t *testing.T) {
+	// 端口 1 上没有监听：错误应来自取数本身，并保留"取用量失败"这一层上下文
+	_, err := RunBuiltin(BuiltinConfig{
+		BuiltinID: "opencode-key", BaseURL: "http://127.0.0.1:1", APIKey: "k", TimeoutMs: 2000,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "取用量失败") {
+		t.Fatalf("应报取用量失败，实得 %v", err)
+	}
+}
+
+// 200 但结构认不出：必须报错而不是返回空列表，否则面板会显示"一切正常"
+// 而实际是取数坏了（契约的那条原则同样适用于内置适配器）。
+func TestRunOpencodeKeyUpstreamShapeChanged(t *testing.T) {
+	srv, _ := newOpencodeKeyServer(t, `{"product":"go","access":{"meters":{}}}`, 200)
+	_, err := RunBuiltin(BuiltinConfig{BuiltinID: "opencode-key", BaseURL: srv.URL, APIKey: "k"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "没有 usage") {
+		t.Fatalf("应报响应里没有 usage，实得 %v", err)
+	}
 }

@@ -19,7 +19,8 @@
 | `deepseek` | DeepSeek 余额。读取 `/user/balance`。 |
 | `moonshot` | Moonshot / Kimi 余额。读取 `/users/me/balance`。 |
 | `scnet` | 国家超算 TokenPlan。登录型，需要 `SCNET_USER` 与 `SCNET_PASS`。 |
-| `opencode` | opencode.ai 套餐。登录型，需要 `OPENCODE_COOKIE` 与 `OPENCODE_ORG_ID`。 |
+| `opencode` | opencode.ai 套餐。登录型，需要 `OPENCODE_COOKIE` 与 `OPENCODE_ORG_ID`。给出 5 小时、每周、每月三档金额。 |
+| `opencode-key` | opencode.ai 套餐（API Key）。读取 `{base_url}/usage`，用 API Key 鉴权，给出同三档的**已用百分比**。接口地址填 `https://opencode.ai/zen/go/v1`，与供应商管理里那条 opencode 渠道同一个 Key。 |
 | `commandcode` | Command Code 套餐。一次刷新请求额度与订阅两个端点，给出 5 小时、每周、每月三档。 |
 | `custom` | 通用端点。必须填写请求路径，并用 `itemsPath` 与 `map` 取数。 |
 
