@@ -3,7 +3,7 @@ rem ============================================================================
 rem  build-image.bat - Windows wrapper for build-image.sh (runs inside WSL)
 rem
 rem  Usage:
-rem    build-image.bat                  auto-derive next patch version
+rem    build-image.bat                  reuse latest tag version (no increment)
 rem    build-image.bat -v v0.8.17       specify version
 rem    build-image.bat --no-push        build and tag locally, skip push
 rem    build-image.bat --no-latest      push <version> but not latest (latest is pushed by default)

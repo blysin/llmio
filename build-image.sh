@@ -51,7 +51,7 @@ build-image.sh — 构建 llmio Docker 镜像并推送到阿里云 ACR
   bash build-image.sh [选项]
 
 选项：
-  -v, --version <vX.Y.Z>   指定镜像版本号（默认：本地最高 vX.Y.Z tag 的 patch + 1）
+  -v, --version <vX.Y.Z>   指定镜像版本号（默认：复用本地最高 vX.Y.Z tag，不递增）
       --no-push            只构建并打本地 tag，不推送
       --no-latest          推送 <version> 但不推送 latest（默认会推送 latest）
       --push-latest        兼容旧调用，显式开启 latest 推送（默认已开启）
@@ -100,7 +100,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# 版本号推导：不传则取本地最高 semver tag 做 patch + 1
+# 版本号推导：不传则直接复用本地最高 semver tag（不递增，可重复构建覆盖）
 # ---------------------------------------------------------------------------
 BASE_TAG=""
 AUTO_DERIVED=0
@@ -110,9 +110,7 @@ if [[ -z "$VERSION" ]]; then
     echo "错误: 未找到形如 vX.Y.Z 的 git tag，无法自动推导版本号，请用 -v 手动指定。" >&2
     exit 2
   fi
-  _ver="${BASE_TAG#v}"
-  IFS='.' read -r _major _minor _patch <<< "$_ver"
-  VERSION="v${_major}.${_minor}.$((_patch + 1))"
+  VERSION="$BASE_TAG"
   AUTO_DERIVED=1
 fi
 
@@ -145,7 +143,7 @@ echo "========================================================"
 printf " 项目根   : %s\n" "$SCRIPT_DIR"
 printf " 构建源   : %s on %s\n" "$GIT_SHA" "$GIT_BRANCH"
 if [[ "$AUTO_DERIVED" == 1 ]]; then
-  printf " 版本号   : %s  (自动推导, 基于 %s)\n" "$VERSION" "$BASE_TAG"
+  printf " 版本号   : %s  (复用最新 tag)\n" "$VERSION"
 else
   printf " 版本号   : %s  (手动指定)\n" "$VERSION"
 fi
@@ -174,7 +172,7 @@ if [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
   echo "⚠ 提示: 工作区有未提交改动，构建的是当前工作区内容而非 HEAD。"
 fi
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-  echo "⚠ 提示: 本地已存在同名 tag ${VERSION}（可能是从上游 fetch 的），留意别误推。"
+  echo "ℹ 提示: ${VERSION} 已存在，本次将覆盖同名镜像 tag（本地与远端）。"
 fi
 echo
 
