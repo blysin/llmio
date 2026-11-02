@@ -19,7 +19,7 @@
 | `handler/` | HTTP 处理与请求参数。 |
 | `service/` | 调度、重试、记录、统计、压缩、配额等业务逻辑。 |
 | `providers/` | 上游适配器。 |
-| `balancers/` | Lottery、Rotor 与熔断。 |
+| `balancers/` | Lottery、Rotor、Smart 与熔断。 |
 | `bridge/` | OpenAI 与 Anthropic 的协议转换纯函数。 |
 | `models/` | GORM 实体、数据库初始化、压缩存储。 |
 | `quota/` | 配额数据源、内置适配器、脚本沙箱。 |

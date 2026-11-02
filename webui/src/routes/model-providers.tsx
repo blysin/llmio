@@ -74,7 +74,7 @@ type MobileInfoItemProps = {
   value: ReactNode;
 };
 
-type StrategyFilter = "all" | "lottery" | "rotor";
+type StrategyFilter = "all" | "lottery" | "rotor" | "smart";
 
 const MobileInfoItem = ({ label, value }: MobileInfoItemProps) => (
   <div className="space-y-1">
@@ -83,8 +83,11 @@ const MobileInfoItem = ({ label, value }: MobileInfoItemProps) => (
   </div>
 );
 
-const renderStrategy = (strategy?: string) =>
-  strategy === "rotor" ? "Rotor" : "Lottery";
+const renderStrategy = (strategy?: string) => {
+  if (strategy === "rotor") return "Rotor";
+  if (strategy === "smart") return "Smart";
+  return "Lottery";
+};
 
 const modelEditSchema = z.object({
   name: z.string().min(1, { message: "模型名称不能为空" }),
@@ -93,7 +96,7 @@ const modelEditSchema = z.object({
   time_out: z.number().min(0, { message: "超时时间不能为负数" }),
   // 0 = 未设置（后端对外就不声明这个模型的窗口大小），因此只挡负数。
   context_length: z.number().min(0, { message: "上下文大小不能为负数" }),
-  strategy: z.enum(["lottery", "rotor"]),
+  strategy: z.enum(["lottery", "rotor", "smart"]),
   breaker: z.boolean(),
   prefer_direct: z.boolean(),
 });
@@ -553,7 +556,7 @@ export default function ModelProvidersPage() {
       max_retry: model.MaxRetry,
       time_out: model.TimeOut,
       context_length: model.ContextLength ?? 0,
-      strategy: model.Strategy === "rotor" ? "rotor" : "lottery",
+      strategy: model.Strategy === "rotor" ? "rotor" : model.Strategy === "smart" ? "smart" : "lottery",
       breaker: model.Breaker ?? false,
       prefer_direct: model.PreferDirect ?? false,
     });
@@ -793,6 +796,7 @@ export default function ModelProvidersPage() {
                     <SelectItem value="all">{t('common:status.all')}</SelectItem>
                     <SelectItem value="lottery">Lottery</SelectItem>
                     <SelectItem value="rotor">Rotor</SelectItem>
+                    <SelectItem value="smart">Smart</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1525,10 +1529,17 @@ export default function ModelProvidersPage() {
                           title: t('model_form.strategy_rotor_title'),
                           desc: t('model_form.strategy_rotor_desc'),
                         },
+                        {
+                          value: "smart",
+                          title: t('model_form.strategy_smart_title'),
+                          desc: t('model_form.strategy_smart_desc'),
+                        },
                       ].map((option) => (
                         <label
                           key={option.value}
-                          className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover:bg-accent"
+                          className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 hover:bg-accent ${
+                            option.value === "smart" ? "sm:col-span-2" : ""
+                          }`}
                         >
                           <FormControl>
                             <Checkbox

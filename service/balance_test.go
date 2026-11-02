@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atopos31/llmio/balancers"
 	"github.com/atopos31/llmio/consts"
 	"github.com/atopos31/llmio/models"
 	"gorm.io/gorm"
@@ -80,17 +81,184 @@ func balanceTestMeta(primaryBaseURL, backupBaseURL string) ProvidersWithMeta {
 
 func runBalanceChat(t *testing.T, meta ProvidersWithMeta) (*http.Response, *models.ChatLog, error) {
 	t.Helper()
+	return runBalanceChatWithSession(t, meta, "session-for-test", http.Header{})
+}
+
+func runBalanceChatWithSession(t *testing.T, meta ProvidersWithMeta, sessionID string, header http.Header) (*http.Response, *models.ChatLog, error) {
+	t.Helper()
+	return runBalanceChatWithBody(t, meta, sessionID, header, []byte(balanceTestBody))
+}
+
+func runBalanceChatWithBody(t *testing.T, meta ProvidersWithMeta, sessionID string, header http.Header, raw []byte) (*http.Response, *models.ChatLog, error) {
+	t.Helper()
+	if header == nil {
+		header = http.Header{}
+	}
 	before := Before{
 		Model:     "test-model",
 		Stream:    false,
-		SessionID: "session-for-test",
-		raw:       []byte(balanceTestBody),
+		SessionID: sessionID,
+		raw:       raw,
 	}
 	return BalanceChat(context.Background(), time.Now(), consts.StyleOpenAI, before, meta, models.ReqMeta{
-		Header:    http.Header{},
+		Header:    header,
 		RemoteIP:  "127.0.0.1",
 		UserAgent: "llmio-test",
 	}, NewBridgeNotes())
+}
+
+// balanceTestSmartMeta 组装两个主关联的候选池，用于验证智能路由的固定落点。
+func balanceTestSmartMeta(firstBaseURL, secondBaseURL string) ProvidersWithMeta {
+	return ProvidersWithMeta{
+		ModelWithProviderMap: map[uint]models.ModelWithProvider{
+			101: {Model: gorm.Model{ID: 101}, ProviderID: 1, ProviderModel: "first-model", Backup: new(false)},
+			102: {Model: gorm.Model{ID: 102}, ProviderID: 2, ProviderModel: "second-model", Backup: new(false)},
+		},
+		WeightItems: map[uint]int{101: 1, 102: 1},
+		ProviderMap: map[uint]models.Provider{
+			1: testOpenAIProvider(1, "first-provider", firstBaseURL),
+			2: testOpenAIProvider(2, "second-provider", secondBaseURL),
+		},
+		MaxRetry: 3,
+		TimeOut:  5,
+		Strategy: consts.BalancerSmart,
+	}
+}
+
+// pickSmartSession 找一个会命中指定关联的会话键，避免测试依赖哈希的偶然结果。
+func pickSmartSession(t *testing.T, items map[uint]int, want uint) string {
+	t.Helper()
+	for i := 0; i < 1000; i++ {
+		sessionID := fmt.Sprintf("smart-pick-%d", i)
+		_, routingKey, _ := resolveSessionKeys(nil, sessionID, "test-model", 0, nil)
+		got, err := balancers.NewSmart(items, routingKey).Pop()
+		if err != nil {
+			t.Fatalf("NewSmart().Pop() error: %v", err)
+		}
+		if got == want {
+			return sessionID
+		}
+	}
+	t.Fatalf("找不到命中关联 %d 的会话键", want)
+	return ""
+}
+
+// 日志的会话列写解析后的稳定键：请求体、会话头、对话根哈希都写；
+// 随机/项目兜底不写，避免出现每请求一个的一次性值。
+func TestBalanceChatLogsStableSessionKey(t *testing.T) {
+	setupBalanceTestDB(t)
+
+	first, _ := newUpstream(t, http.StatusOK, `{"ok":true}`)
+	second, _ := newUpstream(t, http.StatusOK, `{"ok":true}`)
+	meta := balanceTestSmartMeta(first.URL, second.URL)
+
+	tests := []struct {
+		name       string
+		sessionID  string
+		header     http.Header
+		raw        []byte
+		want       string
+		wantPrefix string
+	}{
+		{
+			name:      "请求体会话",
+			sessionID: "body-session",
+			raw:       []byte(balanceTestBody),
+			want:      "body-session",
+		},
+		{
+			name:   "请求头会话",
+			header: http.Header{"X-Session-Id": []string{"header-session"}},
+			raw:    []byte(balanceTestBody),
+			want:   "header-session",
+		},
+		{
+			name:       "对话根哈希",
+			raw:        []byte(balanceTestBody),
+			wantPrefix: sessionKeyPrefix,
+		},
+		{
+			name: "随机兜底不写",
+			raw:  []byte(`{"model":"test-model"}`),
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, log, err := runBalanceChatWithBody(t, meta, tt.sessionID, tt.header, tt.raw)
+			if err != nil {
+				t.Fatalf("BalanceChat() unexpected error: %v", err)
+			}
+			res.Body.Close()
+
+			if tt.wantPrefix != "" {
+				if !strings.HasPrefix(log.SessionID, tt.wantPrefix) {
+					t.Fatalf("log.SessionID = %q, want 前缀 %q", log.SessionID, tt.wantPrefix)
+				}
+				return
+			}
+			if log.SessionID != tt.want {
+				t.Fatalf("log.SessionID = %q, want %q", log.SessionID, tt.want)
+			}
+		})
+	}
+}
+
+// 同一会话两次请求必须固定到同一上游，且只调用它。
+func TestBalanceChatSmartSticky(t *testing.T) {
+	setupBalanceTestDB(t)
+
+	first, firstCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
+	second, secondCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
+	meta := balanceTestSmartMeta(first.URL, second.URL)
+
+	run := func() *models.ChatLog {
+		res, log, err := runBalanceChatWithSession(t, meta, "sticky-session", nil)
+		if err != nil {
+			t.Fatalf("BalanceChat() unexpected error: %v", err)
+		}
+		res.Body.Close()
+		return log
+	}
+
+	firstLog := run()
+	secondLog := run()
+	if firstLog.ProviderName != secondLog.ProviderName {
+		t.Fatalf("同一会话命中 %q 与 %q, want 同一上游", firstLog.ProviderName, secondLog.ProviderName)
+	}
+
+	a, b := atomic.LoadInt32(firstCalls), atomic.LoadInt32(secondCalls)
+	if !(a == 2 && b == 0) && !(a == 0 && b == 2) {
+		t.Fatalf("上游调用次数 = %d/%d, want 两次都落在同一家", a, b)
+	}
+}
+
+// 429 只降权不移出：确定性选路下必须靠本请求内的回避集合换到下一家。
+func TestBalanceChatSmartRetriesAfter429(t *testing.T) {
+	setupBalanceTestDB(t)
+
+	limited, limitedCalls := newUpstream(t, http.StatusTooManyRequests, `{"error":"rate limit"}`)
+	healthy, healthyCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
+	meta := balanceTestSmartMeta(limited.URL, healthy.URL)
+
+	sessionID := pickSmartSession(t, meta.WeightItems, 101)
+
+	res, log, err := runBalanceChatWithSession(t, meta, sessionID, nil)
+	if err != nil {
+		t.Fatalf("期望 429 后切换上游并成功，实际 error: %v", err)
+	}
+	defer res.Body.Close()
+
+	if log.ProviderName != "second-provider" {
+		t.Fatalf("命中 provider = %q, want second-provider", log.ProviderName)
+	}
+	if got := atomic.LoadInt32(limitedCalls); got != 1 {
+		t.Errorf("429 上游调用次数 = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(healthyCalls); got != 1 {
+		t.Errorf("健康上游调用次数 = %d, want 1", got)
+	}
 }
 
 // 备用关联不参与日常轮询：主关联健康时必须只打主关联，备用上游一次都不能被碰。

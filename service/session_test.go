@@ -120,6 +120,104 @@ func TestResolveSessionKeyRandomFallback(t *testing.T) {
 	})
 }
 
+// ── resolveSessionKeys：智能路由键 ──
+
+func TestResolveSessionKeysRoutingKey(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"user","content":"同一个对话"}]}`)
+
+	t.Run("显式会话键按项目与模型隔离", func(t *testing.T) {
+		_, routingKey, stable := resolveSessionKeys(nil, "client-session", "model-a", 7, raw)
+		if want := "7|model-a|client-session"; routingKey != want {
+			t.Fatalf("routingKey = %q, want %q", routingKey, want)
+		}
+		if !stable {
+			t.Fatal("显式会话键应标记为稳定")
+		}
+		_, otherProject, _ := resolveSessionKeys(nil, "client-session", "model-a", 8, raw)
+		if otherProject == routingKey {
+			t.Fatal("不同项目的同名会话得到相同 routingKey")
+		}
+	})
+
+	t.Run("请求头会话同样生效", func(t *testing.T) {
+		header := http.Header{"X-Session-Id": []string{"header-session"}}
+		sessionKey, routingKey, stable := resolveSessionKeys(header, "", "model-a", 7, nil)
+		if sessionKey != "header-session" {
+			t.Fatalf("sessionKey = %q, want header-session", sessionKey)
+		}
+		if want := "7|model-a|header-session"; routingKey != want {
+			t.Fatalf("routingKey = %q, want %q", routingKey, want)
+		}
+		if !stable {
+			t.Fatal("请求头会话键应标记为稳定")
+		}
+	})
+
+	t.Run("对话根哈希的路由键稳定", func(t *testing.T) {
+		raw2 := []byte(`{"messages":[{"role":"user","content":"同一个对话"},{"role":"assistant","content":"回复"},{"role":"user","content":"追问"}]}`)
+		_, first, stable := resolveSessionKeys(nil, "", "model-a", 7, raw)
+		_, second, _ := resolveSessionKeys(nil, "", "model-a", 7, raw2)
+		if first != second {
+			t.Fatalf("同一对话 routingKey 不一致: %q != %q", first, second)
+		}
+		if !stable {
+			t.Fatal("对话根哈希应标记为稳定")
+		}
+	})
+
+	t.Run("无会话线索时按项目固定", func(t *testing.T) {
+		sessionKey, routingKey, stable := resolveSessionKeys(nil, "", "model-a", 7, nil)
+		if want := "project|7|model-a"; routingKey != want {
+			t.Fatalf("routingKey = %q, want %q", routingKey, want)
+		}
+		if stable {
+			t.Fatal("项目兜底不应标记为稳定会话键")
+		}
+		// sessionKey 仍必须是非空随机值，用于强制会话头的上游。
+		if !strings.HasPrefix(sessionKey, sessionKeyPrefix) || sessionKey == sessionKeyPrefix {
+			t.Fatalf("sessionKey = %q, want 非空随机值", sessionKey)
+		}
+		_, again, _ := resolveSessionKeys(nil, "", "model-a", 7, nil)
+		if again != routingKey {
+			t.Fatalf("项目兜底 routingKey 不稳定: %q != %q", again, routingKey)
+		}
+	})
+
+	t.Run("管理员 token 不用项目键钉死", func(t *testing.T) {
+		sessionKey, routingKey, stable := resolveSessionKeys(nil, "", "model-a", 0, nil)
+		if routingKey != sessionKey {
+			t.Fatalf("routingKey = %q, want 与随机 sessionKey 相同 %q", routingKey, sessionKey)
+		}
+		if stable {
+			t.Fatal("随机兜底不应标记为稳定会话键")
+		}
+		_, different, _ := resolveSessionKeys(nil, "", "model-a", 0, nil)
+		if different == routingKey {
+			t.Fatal("管理员无会话请求的 routingKey 不应固定")
+		}
+	})
+}
+
+func TestStableSessionKey(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+
+	if got := stableSessionKey(nil, "body-session", "m", 1, raw); got != "body-session" {
+		t.Fatalf("stableSessionKey() = %q, want body-session", got)
+	}
+	if got := stableSessionKey(http.Header{"X-Session-Id": []string{"header-session"}}, "", "m", 1, raw); got != "header-session" {
+		t.Fatalf("stableSessionKey() = %q, want header-session", got)
+	}
+	if got := stableSessionKey(nil, "", "m", 1, raw); !strings.HasPrefix(got, sessionKeyPrefix) {
+		t.Fatalf("stableSessionKey() = %q, want 对话根哈希", got)
+	}
+	if got := stableSessionKey(nil, "", "m", 1, nil); got != "" {
+		t.Fatalf("stableSessionKey() = %q, want 空串（项目兜底不落库）", got)
+	}
+	if got := stableSessionKey(nil, "", "m", 0, nil); got != "" {
+		t.Fatalf("stableSessionKey() = %q, want 空串（随机兜底不落库）", got)
+	}
+}
+
 // ── conversationRoot：四种协议的对话根提取 ──
 
 func TestConversationRoot(t *testing.T) {

@@ -253,14 +253,14 @@ response = client.chat.completions.create(
 )
 ```
 
-日志页可以按 Session ID 搜索。自定义请求头中的 `{{session}}` 会使用派生后的会话键：
+日志页的 Session ID 列记录解析后的**稳定**会话键，可按 Session ID 搜索。自定义请求头中的 `{{session}}` 会使用派生后的会话键：
 
 1. 请求体 `session_id`。
 2. 入站请求头 `x-opencode-session`、`x-session-id`、`session_id`。
 3. 首条 user 消息的对话根哈希。
 4. 随机串。
 
-这个顺序保证会话键始终非空，适合强制要求会话头的上游。
+这个顺序保证会话键始终非空，适合强制要求会话头的上游。第 4 步的随机串不写入日志列；第 3 步的派生键会以 `llmio-` 开头落库，便于把同一对话的多轮日志关联起来。
 
 ## 流式响应
 

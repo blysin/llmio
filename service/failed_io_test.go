@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"testing"
 
@@ -29,8 +30,12 @@ func TestSaveFailedLogWritesIOWhenEnabled(t *testing.T) {
 
 	raw := []byte("{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
 	before := Before{Model: "gpt-4o", raw: raw}
+	sessionID := stableSessionKey(nil, before.SessionID, before.Model, 7, raw)
+	if sessionID == "" {
+		t.Fatal("对话根哈希应得到稳定会话键")
+	}
 
-	logId, err := saveFailedLog(ctx, "openai", before, "record not found")
+	logId, err := saveFailedLog(ctx, "openai", before, sessionID, "record not found")
 	if err != nil {
 		t.Fatalf("saveFailedLog: %v", err)
 	}
@@ -53,6 +58,9 @@ func TestSaveFailedLogWritesIOWhenEnabled(t *testing.T) {
 	}
 	if cl.Error != "record not found" {
 		t.Errorf("Error = %q", cl.Error)
+	}
+	if cl.SessionID != sessionID {
+		t.Errorf("SessionID = %q, want %q", cl.SessionID, sessionID)
 	}
 
 	var cio models.ChatIO
@@ -79,7 +87,7 @@ func TestSaveFailedLogNoIOWhenDisabled(t *testing.T) {
 	raw := []byte("{\"model\":\"gpt-4o\"}")
 	before := Before{Model: "gpt-4o", raw: raw}
 
-	logId, err := saveFailedLog(ctx, "openai", before, "no provider")
+	logId, err := saveFailedLog(ctx, "openai", before, "", "no provider")
 	if err != nil {
 		t.Fatalf("saveFailedLog: %v", err)
 	}
@@ -91,6 +99,9 @@ func TestSaveFailedLogNoIOWhenDisabled(t *testing.T) {
 	if cl.ChatIO {
 		t.Error("ChatIO flag should be false")
 	}
+	if cl.SessionID != "" {
+		t.Errorf("SessionID = %q, want 空串（无稳定会话键）", cl.SessionID)
+	}
 
 	var count int64
 	if err := models.DB.Model(&models.ChatIO{}).Where("log_id = ?", logId).Count(&count).Error; err != nil {
@@ -98,6 +109,27 @@ func TestSaveFailedLogNoIOWhenDisabled(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("no ChatIO rows expected when ioLog disabled, got %d", count)
+	}
+}
+
+// 提前失败（模型不存在/无可用提供商）同样要带上稳定会话键，header 来源也不例外。
+func TestProvidersWithMetaLogsHeaderSessionOnMissingModel(t *testing.T) {
+	setupFailedIOTestDB(t)
+
+	ctx := context.WithValue(context.Background(), consts.ContextKeyAuthKeyID, uint(7))
+	before := Before{Model: "missing-model", raw: []byte(`{"model":"missing-model"}`)}
+	header := http.Header{"X-Session-Id": []string{"header-session"}}
+
+	if _, err := ProvidersWithMetaBymodelsName(ctx, header, consts.StyleOpenAI, before); err == nil {
+		t.Fatal("模型不存在时应返回 error")
+	}
+
+	var cl models.ChatLog
+	if err := models.DB.Order("id DESC").First(&cl).Error; err != nil {
+		t.Fatalf("load chat log: %v", err)
+	}
+	if cl.SessionID != "header-session" {
+		t.Fatalf("SessionID = %q, want header-session", cl.SessionID)
 	}
 }
 

@@ -113,7 +113,7 @@ type ChatLog struct {
 	UserAgent   string `gorm:"index"` // 用户代理
 	RemoteIP    string // 访问ip
 	AuthKeyID   uint   `gorm:"index;index:idx_chat_logs_key_created,priority:1"` // 使用的AuthKey ID
-	SessionID   string `gorm:"index"`                                            // 请求体中的session_id
+	SessionID   string `gorm:"index"`                                            // 解析后的稳定会话键；随机/项目兜底不写入
 	ChatIO      bool   // 是否开启IO记录
 	// Backup 本次响应由备用关联提供：主关联在本请求内全部失败出局后降级接管。
 	// 非指针 bool 是后加列，AutoMigrate 不给存量行填默认值，NULL 由 init.go 回填 false。

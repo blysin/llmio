@@ -96,14 +96,14 @@ func writeFailedIO(ctx context.Context, logId uint, raw []byte, ioLog bool) {
 
 // saveFailedLog 为"未进入 BalanceChat"的失败路径（模型不存在、无可用提供商）落一条
 // error 日志，并在 ioLog 开关打开时写 ChatIO.Input。返回新日志 ID。
-func saveFailedLog(ctx context.Context, style string, before Before, errMsg string) (uint, error) {
+func saveFailedLog(ctx context.Context, style string, before Before, sessionID, errMsg string) (uint, error) {
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	authKeyIOLog, _ := ctx.Value(consts.ContextKeyAuthKeyIOLog).(bool)
 	logId, err := SaveChatLog(ctx, models.ChatLog{
 		Name:      before.Model,
 		Status:    consts.StatusError,
 		Style:     style,
-		SessionID: before.SessionID,
+		SessionID: sessionID,
 		AuthKeyID: authKeyID,
 		ChatIO:    authKeyIOLog,
 		Error:     errMsg,
@@ -127,6 +127,18 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 
 	go RecordRetryLog(context.Background(), retryLog)
 
+	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
+	authKeyIOLog, _ := ctx.Value(consts.ContextKeyAuthKeyIOLog).(bool)
+
+	// 会话键与路由键在重试循环外解析一次：同一次请求的各次重试共用同一路由键，
+	// 避免重试期间会话漂移（随机兜底分支尤其需要）。
+	sessionKey, routingKey, stable := resolveSessionKeys(reqMeta.Header, before.SessionID, before.Model, authKeyID, before.raw)
+	// 日志列只写稳定的会话键；随机/项目兜底不落库，避免出现一次性值。
+	logSessionID := ""
+	if stable {
+		logSessionID = sessionKey
+	}
+
 	// 选择负载均衡策略
 	// 主池与备用池各自独立构建：备用关联不参与日常轮询，
 	// 只有主池在本请求内被清空（所有主关联都失败出局）后才会接管，且只降不升。
@@ -135,6 +147,8 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		switch providersWithMeta.Strategy {
 		case consts.BalancerRotor:
 			b = balancers.NewRotor(items)
+		case consts.BalancerSmart:
+			b = balancers.NewSmart(items, routingKey)
 		default:
 			b = balancers.NewLottery(items)
 		}
@@ -167,17 +181,10 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		responseHeaderTimeout = responseHeaderTimeout / 3
 	}
 
-	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
-	authKeyIOLog, _ := ctx.Value(consts.ContextKeyAuthKeyIOLog).(bool)
-
 	traceID, err := token.GenerateRandomChars(10)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// 会话键在重试循环外解析一次：同一次请求的各次重试共用同一会话键，
-	// 避免重试期间会话漂移（随机兜底分支尤其需要）
-	sessionKey := ResolveSessionKey(reqMeta.Header, before.SessionID, before.Model, authKeyID, before.raw)
 
 	timer := time.NewTimer(time.Second * time.Duration(providersWithMeta.TimeOut))
 	defer timer.Stop()
@@ -208,7 +215,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			id, err := balancer.Pop()
 			if err != nil {
 				msg := fmt.Sprintf("balancer pop err: %v, traceID: %s%s", err, traceID, lastErrorSuffix(lastErr)+backupHint())
-				if _, lerr := saveFailedLog(ctx, style, before, msg); lerr != nil {
+				if _, lerr := saveFailedLog(ctx, style, before, logSessionID, msg); lerr != nil {
 					slog.Error("save failed log error", "error", lerr)
 				}
 				return nil, nil, errors.New(msg)
@@ -258,7 +265,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				UserAgent:      reqMeta.UserAgent,
 				RemoteIP:       reqMeta.RemoteIP,
 				AuthKeyID:      authKeyID,
-				SessionID:      before.SessionID,
+				SessionID:      logSessionID,
 				ChatIO:         authKeyIOLog,
 				Retry:          retry,
 				ProxyTime:      time.Since(start),
@@ -722,11 +729,14 @@ func splitWeightItems(modelWithProviders []models.ModelWithProvider, providerMap
 	return weightItems, backupWeightItems
 }
 
-func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Before) (*ProvidersWithMeta, error) {
+func ProvidersWithMetaBymodelsName(ctx context.Context, header http.Header, style string, before Before) (*ProvidersWithMeta, error) {
+	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
+	logSessionID := stableSessionKey(header, before.SessionID, before.Model, authKeyID, before.raw)
+
 	model, err := gorm.G[models.Model](models.DB).Where("name = ?", before.Model).First(ctx)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if _, err := saveFailedLog(ctx, style, before, err.Error()); err != nil {
+			if _, err := saveFailedLog(ctx, style, before, logSessionID, err.Error()); err != nil {
 				return nil, err
 			}
 			return nil, errors.New("not found model " + before.Model)
@@ -754,7 +764,7 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, style string, before Bef
 	}
 
 	if len(modelWithProviders) == 0 {
-		if _, err := saveFailedLog(ctx, style, before, "not provider for model "+before.Model); err != nil {
+		if _, err := saveFailedLog(ctx, style, before, logSessionID, "not provider for model "+before.Model); err != nil {
 			return nil, err
 		}
 		return nil, errors.New("not provider for model " + before.Model)

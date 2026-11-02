@@ -630,6 +630,32 @@ describe("模型表单 · 优先同协议", () => {
   })
 })
 
+describe("模型表单 · 负载均衡策略", () => {
+  /** 打开某一行（表格里那一个按钮）的编辑对话框 */
+  async function openEdit() {
+    const user = userEvent.setup()
+    await within(await table()).findByText("gpt-test")
+    await user.click(within(await table()).getByRole("button", { name: "编辑模型" }))
+    return user
+  }
+
+  it("智能路由可选中并随请求提交", async () => {
+    mocked.updateModel.mockResolvedValue(model())
+    renderPage()
+    const user = await openEdit()
+
+    await user.click(await screen.findByRole("checkbox", { name: /智能路由/ }))
+    await user.click(screen.getByRole("button", { name: "更新" }))
+
+    await waitFor(() =>
+      expect(mocked.updateModel).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ strategy: "smart" })
+      )
+    )
+  })
+})
+
 describe("关联表单 · 峰谷条款", () => {
   const 已配条款: PeakTerms = {
     enabled: true,

@@ -288,6 +288,21 @@ func DeleteProvider(c *gin.Context) {
 	common.Success(c, nil)
 }
 
+// normalizeStrategy 校验并归一化模型的负载均衡策略：
+// 空值取默认策略，其余必须是已支持的值。第二个返回值表示是否合法。
+func normalizeStrategy(raw string) (string, bool) {
+	strategy := strings.TrimSpace(raw)
+	if strategy == "" {
+		return consts.BalancerDefault, true
+	}
+	switch strategy {
+	case consts.BalancerLottery, consts.BalancerRotor, consts.BalancerSmart:
+		return strategy, true
+	default:
+		return "", false
+	}
+}
+
 // GetModels 获取模型列表（支持分页与筛选）
 func GetModels(c *gin.Context) {
 	params, err := common.ParsePagination(c)
@@ -304,13 +319,12 @@ func GetModels(c *gin.Context) {
 	}
 
 	if strategy := strings.TrimSpace(c.Query("strategy")); strategy != "" {
-		switch strategy {
-		case consts.BalancerLottery, consts.BalancerRotor:
-			query = query.Where("strategy = ?", strategy)
-		default:
+		normalized, ok := normalizeStrategy(strategy)
+		if !ok {
 			common.BadRequest(c, "invalid strategy filter")
 			return
 		}
+		query = query.Where("strategy = ?", normalized)
 	}
 
 	list := make([]models.Model, 0)
@@ -360,9 +374,10 @@ func CreateModel(c *gin.Context) {
 		common.BadRequest(c, fmt.Sprintf("Model: %s already exists", req.Name))
 		return
 	}
-	strategy := req.Strategy
-	if strategy == "" {
-		strategy = consts.BalancerDefault
+	strategy, ok := normalizeStrategy(req.Strategy)
+	if !ok {
+		common.BadRequest(c, "invalid strategy")
+		return
 	}
 
 	var maxDisplayOrder int
@@ -424,9 +439,10 @@ func UpdateModel(c *gin.Context) {
 		return
 	}
 
-	strategy := req.Strategy
-	if strategy == "" {
-		strategy = consts.BalancerDefault
+	strategy, ok := normalizeStrategy(req.Strategy)
+	if !ok {
+		common.BadRequest(c, "invalid strategy")
+		return
 	}
 
 	// Update fields

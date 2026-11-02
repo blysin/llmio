@@ -47,16 +47,25 @@ type HeaderVars struct {
 // 同一对话的各轮请求应得到相同的值：前两级由客户端保证，第三级以对话的
 // 首条 user 消息为指纹计算哈希，使客户端零配合时依然保持会话内稳定。
 func ResolveSessionKey(header http.Header, sessionID, model string, authKeyID uint, raw []byte) string {
+	sessionKey, _, _ := resolveSessionKeys(header, sessionID, model, authKeyID, raw)
+	return sessionKey
+}
+
+// resolveSessionKeys 一次解析出会话键、智能路由键，以及会话键是否稳定。
+// 路由键在会话键外再拼上 authKeyID 与 model，隔离不同项目/模型下同名的客户端
+// 会话；客户端没有给出任何会话线索时退化为项目级键，让同项目的这类请求仍有
+// 稳定落点。stable 为 false 表示会话键来自随机兜底或项目兜底，不用于日志展示。
+func resolveSessionKeys(header http.Header, sessionID, model string, authKeyID uint, raw []byte) (sessionKey, routingKey string, stable bool) {
 	// 1. 请求体中显式声明的会话（最权威，客户端可通过 extra_body 传入）
 	if sessionID != "" {
-		return sessionID
+		return sessionID, scopedRoutingKey(authKeyID, model, sessionID), true
 	}
 
 	// 2. 入站请求头中的会话线索（客户端已自带同名头时直接沿用）
 	if header != nil {
 		for _, key := range sessionHeaderKeys {
 			if value := strings.TrimSpace(header.Get(key)); value != "" {
-				return value
+				return value, scopedRoutingKey(authKeyID, model, value), true
 			}
 		}
 	}
@@ -64,11 +73,31 @@ func ResolveSessionKey(header http.Header, sessionID, model string, authKeyID ui
 	// 3. 对话根哈希：以首条 user 消息为对话指纹，客户端零配合也能获得稳定值
 	if root := conversationRoot(raw); root != "" {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s", authKeyID, model, root)))
-		return sessionKeyPrefix + hex.EncodeToString(sum[:8])
+		key := sessionKeyPrefix + hex.EncodeToString(sum[:8])
+		return key, scopedRoutingKey(authKeyID, model, key), true
 	}
 
 	// 4. 兜底：保证非空，避免强制会话头的上游拒绝请求
-	return newRandomID()
+	sessionKey = newRandomID()
+	if authKeyID == 0 {
+		// 管理员 token 没有项目归属：用随机键按权重均摊，避免所有无会话请求挤到一家。
+		return sessionKey, sessionKey, false
+	}
+	return sessionKey, fmt.Sprintf("project|%d|%s", authKeyID, model), false
+}
+
+// stableSessionKey 返回可写入日志的稳定会话键；随机/项目兜底返回空串，
+// 避免日志列出现每请求一个的一次性值。
+func stableSessionKey(header http.Header, sessionID, model string, authKeyID uint, raw []byte) string {
+	sessionKey, _, stable := resolveSessionKeys(header, sessionID, model, authKeyID, raw)
+	if !stable {
+		return ""
+	}
+	return sessionKey
+}
+
+func scopedRoutingKey(authKeyID uint, model, key string) string {
+	return fmt.Sprintf("%d|%s|%s", authKeyID, model, key)
 }
 
 // newRandomID 生成带前缀的随机会话键。随机源异常时退化为时间戳，仍然保证非空。

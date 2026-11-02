@@ -121,6 +121,8 @@
     "strategy_lottery_desc": "依權重機率抽取，適合隨機分散流量。",
     "strategy_rotor_title": "Rotor",
     "strategy_rotor_desc": "依權重循環輪轉，適合需要快取命中的場景。",
+    "strategy_smart_title": "智慧路由",
+    "strategy_smart_desc": "依工作階段鍵雜湊固定上游，提高快取命中率；無工作階段鍵時依專案固定。建議同時開啟熔斷。",
     "saving": "儲存中...",
     "cancel": "取消"
   },

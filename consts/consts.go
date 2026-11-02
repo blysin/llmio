@@ -24,6 +24,8 @@ const (
 	BalancerLottery = "lottery"
 	// 按顺序循环轮转，每次降低权重后移到队尾
 	BalancerRotor = "rotor"
+	// 按会话键做加权一致性哈希，把同一会话固定到同一上游，提高缓存命中率
+	BalancerSmart = "smart"
 	// 默认策略
 	BalancerDefault = BalancerLottery
 )
