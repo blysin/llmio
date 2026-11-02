@@ -15,8 +15,7 @@
     "type_placeholder": "選擇類型"
   },
   "actions": {
-    "add": "新增供應商",
-    "refresh": "重新整理用量"
+    "add": "新增供應商"
   },
   "table": {
     "id": "ID",
@@ -24,9 +23,6 @@
     "type": "類型",
     "config": "設定",
     "console": "控制台",
-    "rolling": "滾動用量",
-    "weekly": "每週用量",
-    "monthly": "每月用量",
     "actions": "操作"
   },
   "delete_dialog": {
@@ -40,13 +36,6 @@
     "edit_desc": "修改供應商資訊",
     "name_label": "名稱",
     "type_label": "類型",
-    "category_label": "分類",
-    "category": {
-      "other": "其他",
-      "opencode": "OpenCode",
-      "commandcode": "CommandCode"
-    },
-    "category_hint": "分類僅用於標記渠道歸屬，不影響介面協定；選擇 OpenCode / CommandCode 會顯示用量。",
     "no_types": "暫無可用類型，請先設定範本。",
     "config_label": "設定",
     "no_config": "目前供應商類型暫無額外設定。",
@@ -67,17 +56,6 @@
     "no_data": "暫無模型資料",
     "no_match": "找不到符合的模型",
     "loading": "載入模型列表"
-  },
-  "usage": {
-    "resets_at": "重置時間",
-    "resets_in": "（{{time}}後重置）",
-    "resetting": "即將重置",
-    "unsupported": "此供應商分類不支援用量查詢",
-    "duration": {
-      "days": "{{count}}天",
-      "hours": "{{count}}小時",
-      "minutes": "{{count}}分鐘"
-    }
   },
   "toast": {
     "delete_success": "供應商 {{name}} 刪除成功",

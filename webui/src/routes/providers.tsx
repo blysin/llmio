@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,50 +28,16 @@ import {
   getProviders,
   deleteProvider,
   getProviderTemplates,
-  getProviderModels,
-  getProviderUsage
+  getProviderModels
 } from "@/lib/api";
-import { USAGE_SUPPORTED_CATEGORIES } from "@/lib/api";
-import type { Provider, ProviderTemplate, ProviderModel, ProviderUsage } from "@/lib/api";
+import type { Provider, ProviderTemplate, ProviderModel } from "@/lib/api";
 import { copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
-import { ExternalLink, Pencil, Trash2, Boxes, RefreshCw, TriangleAlert } from "lucide-react";
+import { ExternalLink, Pencil, Trash2, Boxes } from "lucide-react";
 import { ProviderFormDialog } from "@/routes/providers/provider-form-dialog";
 import { ProviderModelsDialog } from "@/routes/providers/provider-models-dialog";
 import { useProviderForm } from "@/routes/providers/use-provider-form";
 import { getConfigBaseUrl } from "@/routes/providers/provider-form-utils";
-
-// 用量百分比保留一位小数，去掉无意义的 .0
-const formatUsagePercent = (percent: number) => `${Math.round(percent * 10) / 10}%`;
-
-// 把重置时间折算成单一最大单位（如 25天 / 2小时 / 30分钟）。
-// 纯函数只做时间计算并返回结构，文案与 i18n key 在组件内拼装，避免动态 key 破坏 key 类型校验。
-type ResetHint =
-  | { kind: "resetting"; title: string }
-  | { kind: "duration"; unit: "days" | "hours" | "minutes"; count: number; title: string };
-
-const formatResetCountdown = (iso: string): ResetHint | null => {
-  const target = new Date(iso).getTime();
-  if (Number.isNaN(target)) {
-    return null;
-  }
-  const diffMs = target - Date.now();
-  // 已到重置时刻（或时钟误差导致略微为负）统一显示「即将重置」
-  if (diffMs <= 0) {
-    return { kind: "resetting", title: new Date(target).toLocaleString() };
-  }
-  const minutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(diffMs / 3600000);
-  const days = Math.floor(diffMs / 86400000);
-  const title = new Date(target).toLocaleString();
-  if (days >= 1) {
-    return { kind: "duration", unit: "days", count: days, title };
-  }
-  if (hours >= 1) {
-    return { kind: "duration", unit: "hours", count: hours, title };
-  }
-  return { kind: "duration", unit: "minutes", count: Math.max(minutes, 1), title };
-};
 
 export default function ProvidersPage() {
   const { t } = useTranslation(['providers', 'common']);
@@ -83,9 +49,6 @@ export default function ProvidersPage() {
   const [modelsOpenId, setModelsOpenId] = useState<number | null>(null);
   const [providerModels, setProviderModels] = useState<ProviderModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [usageMap, setUsageMap] = useState<Record<number, ProviderUsage>>({});
-  const [usageLoading, setUsageLoading] = useState(false);
-  const usageRequestedRef = useRef<Set<number>>(new Set());
 
   // 筛选条件
   const [nameFilter, setNameFilter] = useState<string>("");
@@ -102,7 +65,6 @@ export default function ProvidersPage() {
     openEditDialog,
     openCreateDialog,
     handleConfigFieldChange,
-    handleCategoryChange,
     submit,
   } = useProviderForm({
     providerTemplates,
@@ -128,8 +90,6 @@ export default function ProvidersPage() {
 
       const data = await getProviders({ name, type });
       setProviders(data);
-      // 首屏/新增的供应商补拉用量；已在 ref 中记录过的会被跳过，避免筛选时重复打上游
-      void fetchUsages(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(t('toast.fetch_failed', { message }));
@@ -137,106 +97,6 @@ export default function ProvidersPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  // 并发拉取列表内每个供应商的用量；单个失败只影响该行，不拖垮整页。
-  // usageRequestedRef 记录已发起过请求的 provider，避免筛选框每敲一次键都重打上游
-  // （列表会被 name 筛选高频刷新，用量属于上游限额资源，只在首次与手动刷新时拉取）。
-  // 仅支持用量的分类才打上游，其余分类（如「其他」）直接落 supported=false；
-  // 后端同样会按分类兜底判断，这里只是省一次无谓往返。
-  const fetchUsages = async (list: Provider[], force = false) => {
-    if (force) {
-      usageRequestedRef.current.clear();
-    }
-    const targets = list.filter((provider) => !usageRequestedRef.current.has(provider.ID));
-    if (targets.length === 0) {
-      return;
-    }
-    targets.forEach((provider) => usageRequestedRef.current.add(provider.ID));
-
-    const next: Record<number, ProviderUsage> = {};
-    const requestable: Provider[] = [];
-    for (const provider of targets) {
-      if (USAGE_SUPPORTED_CATEGORIES.includes(provider.Category ?? "")) {
-        requestable.push(provider);
-      } else {
-        next[provider.ID] = { supported: false };
-      }
-    }
-
-    if (requestable.length === 0) {
-      setUsageMap((prev) => ({ ...prev, ...next }));
-      return;
-    }
-
-    setUsageLoading(true);
-    try {
-      await Promise.all(
-        requestable.map(async (provider) => {
-          try {
-            next[provider.ID] = await getProviderUsage(provider.ID);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            next[provider.ID] = { supported: true, error: message };
-          }
-        })
-      );
-      setUsageMap((prev) => ({ ...prev, ...next }));
-    } finally {
-      setUsageLoading(false);
-    }
-  };
-
-  const renderUsageCell = (usage: ProviderUsage | undefined, key: "rolling" | "weekly" | "monthly") => {
-    if (!usage) {
-      return <span className="text-muted-foreground">{usageLoading ? "…" : "-"}</span>;
-    }
-    if (!usage.supported) {
-      return (
-        <span className="text-muted-foreground" title={t('usage.unsupported')}>
-          -
-        </span>
-      );
-    }
-    if (usage.error) {
-      return (
-        <span className="inline-flex items-center text-destructive" title={usage.error}>
-          <TriangleAlert className="h-3.5 w-3.5" />
-        </span>
-      );
-    }
-    const window = usage[key];
-    if (!window) {
-      return <span className="text-muted-foreground">-</span>;
-    }
-    const hint = window.resets_at ? formatResetCountdown(window.resets_at) : null;
-    // 单位文案用显式 key 分支，避免动态拼接 key（i18n key 有编译期校验）
-    let resetText: string | null = null;
-    if (hint?.kind === "resetting") {
-      resetText = t('usage.resetting');
-    } else if (hint?.kind === "duration") {
-      const count = hint.count;
-      if (hint.unit === "days") {
-        resetText = t('usage.duration.days', { count });
-      } else if (hint.unit === "hours") {
-        resetText = t('usage.duration.hours', { count });
-      } else {
-        resetText = t('usage.duration.minutes', { count });
-      }
-    }
-    return (
-      <span
-        className={window.status === "exceeded" ? "font-medium text-destructive" : "font-medium"}
-        title={hint?.title}
-      >
-        {formatUsagePercent(window.percent)}
-        {resetText && (
-          <span className="text-muted-foreground font-normal">
-            {t('usage.resets_in', { time: resetText })}
-          </span>
-        )}
-      </span>
-    );
   };
 
   const fetchProviderTemplates = async () => {
@@ -302,23 +162,8 @@ export default function ProvidersPage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-2 p-1">
-      <div className="flex flex-col gap-2 flex-shrink-0">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h2 className="text-2xl font-bold tracking-tight">{t('title')}</h2>
-          </div>
-          <div className="flex w-full sm:w-auto items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => fetchUsages(providers, true)}
-              disabled={usageLoading || providers.length === 0}
-              className="h-8 gap-1.5 text-xs"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${usageLoading ? "animate-spin" : ""}`} />
-              {t('actions.refresh')}
-            </Button>
-          </div>
-        </div>
+      <div className="flex-shrink-0">
+        <h2 className="text-2xl font-bold tracking-tight">{t('title')}</h2>
       </div>
       <div className="flex flex-col gap-2 flex-shrink-0">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:gap-4">
@@ -371,7 +216,7 @@ export default function ProvidersPage() {
           <div className="h-full flex flex-col">
             <div className="hidden sm:block flex-1 overflow-y-auto">
               <div className="w-full">
-                <Table className="min-w-[1720px]">
+                <Table className="min-w-[1020px]">
                   <TableHeader className="z-10 sticky top-0 bg-secondary/80 text-secondary-foreground">
                     <TableRow>
                       <TableHead>{t('table.id')}</TableHead>
@@ -379,9 +224,6 @@ export default function ProvidersPage() {
                       <TableHead>{t('table.type')}</TableHead>
                       <TableHead>{t('table.config')}</TableHead>
                       <TableHead>{t('table.console')}</TableHead>
-                      <TableHead>{t('table.rolling')}</TableHead>
-                      <TableHead>{t('table.weekly')}</TableHead>
-                      <TableHead>{t('table.monthly')}</TableHead>
                       <TableHead>{t('table.actions')}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -410,9 +252,6 @@ export default function ProvidersPage() {
                             </Button>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "rolling")}</TableCell>
-                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "weekly")}</TableCell>
-                        <TableCell className="text-xs">{renderUsageCell(usageMap[provider.ID], "monthly")}</TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
                             <Button variant="outline" size="icon" onClick={() => openEditDialog(provider)}>
@@ -503,20 +342,6 @@ export default function ProvidersPage() {
                       </AlertDialog>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 border-t pt-2">
-                    <div className="space-y-0.5">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.rolling')}</p>
-                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "rolling")}</p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.weekly')}</p>
-                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "weekly")}</p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{t('table.monthly')}</p>
-                      <p className="text-xs">{renderUsageCell(usageMap[provider.ID], "monthly")}</p>
-                    </div>
-                  </div>
                 </div>
               ))}
             </div>
@@ -533,7 +358,6 @@ export default function ProvidersPage() {
         structuredConfigEnabled={structuredConfigEnabled}
         configFields={configFields}
         onConfigFieldChange={handleConfigFieldChange}
-        onCategoryChange={handleCategoryChange}
         onSubmit={submit}
       />
 

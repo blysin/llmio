@@ -22,7 +22,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
-import { PROVIDER_CATEGORIES } from "@/lib/api";
 import type { Provider, ProviderTemplate } from "@/lib/api";
 import type { ConfigFieldMap } from "./provider-form-utils";
 import type { ProviderFormValues } from "./use-provider-form";
@@ -36,7 +35,6 @@ type ProviderFormDialogProps = {
   structuredConfigEnabled: boolean;
   configFields: ConfigFieldMap;
   onConfigFieldChange: (key: string, value: string) => void;
-  onCategoryChange: (category: string) => void;
   onSubmit: (values: ProviderFormValues) => Promise<void>;
 };
 
@@ -49,17 +47,9 @@ export function ProviderFormDialog({
   structuredConfigEnabled,
   configFields,
   onConfigFieldChange,
-  onCategoryChange,
   onSubmit,
 }: ProviderFormDialogProps) {
   const { t } = useTranslation(['providers', 'common']);
-
-  // 分类显示名用显式 key 分支（i18n key 有编译期校验，不能动态拼接）
-  const categoryLabel = (category: string) => {
-    if (category === "opencode") return t('form.category.opencode');
-    if (category === "commandcode") return t('form.category.commandcode');
-    return t('form.category.other');
-  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -157,59 +147,6 @@ export function ProviderFormDialog({
                         {t('form.type_not_in_template', { type: currentValue })}
                       </p>
                     )}
-                    <FormMessage />
-                  </FormItem>
-                );
-              }}
-            />
-
-            <FormField
-              control={form.control}
-              name="category"
-              render={({ field }) => {
-                const currentValue = field.value ?? "";
-                return (
-                  <FormItem>
-                    <FormLabel>{t('form.category_label')}</FormLabel>
-                    <FormControl>
-                      <RadioGroup
-                        value={currentValue}
-                        onValueChange={(value) => {
-                          field.onChange(value);
-                          onCategoryChange(value);
-                        }}
-                        className="flex flex-wrap gap-2"
-                      >
-                        {PROVIDER_CATEGORIES.map((category) => {
-                          const radioId = `provider-category-${category}`;
-                          const selected = currentValue === category;
-                          return (
-                            <label
-                              key={category}
-                              htmlFor={radioId}
-                              className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${selected
-                                ? "border-primary bg-primary/10"
-                                : "border-border"
-                                }`}
-                            >
-                              <RadioGroupItem
-                                id={radioId}
-                                value={category}
-                                className="sr-only"
-                              />
-                              <Checkbox
-                                checked={selected}
-                                aria-hidden="true"
-                                tabIndex={-1}
-                                className="pointer-events-none"
-                              />
-                              <span className="select-none">{categoryLabel(category)}</span>
-                            </label>
-                          );
-                        })}
-                      </RadioGroup>
-                    </FormControl>
-                    <p className="text-xs text-muted-foreground">{t('form.category_hint')}</p>
                     <FormMessage />
                   </FormItem>
                 );

@@ -15,8 +15,7 @@
     "type_placeholder": "选择类型"
   },
   "actions": {
-    "add": "添加提供商",
-    "refresh": "刷新用量"
+    "add": "添加提供商"
   },
   "table": {
     "id": "ID",
@@ -24,9 +23,6 @@
     "type": "类型",
     "config": "配置",
     "console": "控制台",
-    "rolling": "滚动用量",
-    "weekly": "每周用量",
-    "monthly": "每月用量",
     "actions": "操作"
   },
   "delete_dialog": {
@@ -40,13 +36,6 @@
     "edit_desc": "修改提供商信息",
     "name_label": "名称",
     "type_label": "类型",
-    "category_label": "分类",
-    "category": {
-      "other": "其他",
-      "opencode": "OpenCode",
-      "commandcode": "CommandCode"
-    },
-    "category_hint": "分类仅用于标记渠道归属，不影响接口协议；选择 OpenCode / CommandCode 会展示用量。",
     "no_types": "暂无可用类型，请先配置模板。",
     "config_label": "配置",
     "no_config": "当前提供商类型暂无额外配置。",
@@ -67,17 +56,6 @@
     "no_data": "暂无模型数据",
     "no_match": "未找到匹配的模型",
     "loading": "加载模型列表"
-  },
-  "usage": {
-    "resets_at": "重置时间",
-    "resets_in": "（{{time}}后重置）",
-    "resetting": "即将重置",
-    "unsupported": "该提供商分类不支持用量查询",
-    "duration": {
-      "days": "{{count}}天",
-      "hours": "{{count}}小时",
-      "minutes": "{{count}}分钟"
-    }
   },
   "toast": {
     "delete_success": "提供商 {{name}} 删除成功",

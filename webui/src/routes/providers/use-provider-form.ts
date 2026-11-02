@@ -6,7 +6,6 @@ import { createProvider, updateProvider } from "@/lib/api";
 import type { Provider, ProviderTemplate } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  CATEGORY_DEFAULT_BASE_URL,
   mergeTemplateWithConfig,
   parseConfigJson,
   stringifyConfigFields,
@@ -26,7 +25,8 @@ export const providerFormSchema = z.object({
 
 export type ProviderFormValues = z.infer<typeof providerFormSchema>;
 
-// 分类默认「其他」：不影响上游协议，只是不展示用量等增强信息
+// 分类控件已从表单移除，但仍是隐藏字段：编辑时带回数据库里的原值，
+// 否则提交会把已设置过分类的渠道重置成 other（后端按分类决定用量适配器是否可用）。
 const DEFAULT_CATEGORY = "other";
 
 const defaultFormValues: ProviderFormValues = {
@@ -125,33 +125,6 @@ export const useProviderForm = ({
     });
   };
 
-  // 切换分类时把该渠道的默认 base_url 预填进配置。
-  // 仅在结构化配置可用、且当前值是「空」或「某个已知默认值」（其它分类的预设、当前类型的模板默认值）
-  // 时才覆盖；用户手填过的地址一律保留，避免把人家的配置冲掉。
-  const handleCategoryChange = (category: string) => {
-    if (!structuredConfigEnabled) {
-      return;
-    }
-    const presetURL = CATEGORY_DEFAULT_BASE_URL[category];
-    if (!presetURL) {
-      return;
-    }
-
-    const knownDefaults = new Set(Object.values(CATEGORY_DEFAULT_BASE_URL));
-    const template = providerTemplates.find((item) => item.type === selectedProviderType);
-    const templateBaseURL = template ? parseConfigJson(template.template)?.base_url : undefined;
-    if (templateBaseURL) {
-      knownDefaults.add(templateBaseURL);
-    }
-
-    const currentURL = configFields.base_url ?? "";
-    if (currentURL && !knownDefaults.has(currentURL)) {
-      return;
-    }
-
-    handleConfigFieldChange("base_url", presetURL);
-  };
-
   const openEditDialog = (provider: Provider) => {
     configCacheRef.current = {};
     setEditingProvider(provider);
@@ -236,7 +209,6 @@ export const useProviderForm = ({
     openEditDialog,
     openCreateDialog,
     handleConfigFieldChange,
-    handleCategoryChange,
     submit,
   };
 };
