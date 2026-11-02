@@ -121,8 +121,8 @@
     "strategy_lottery_desc": "按权重概率抽取, 适合随机分散流量.",
     "strategy_rotor_title": "Rotor",
     "strategy_rotor_desc": "按权重循环轮转, 适合需要缓存命中场景.",
-    "strategy_smart_title": "智能路由",
-    "strategy_smart_desc": "按会话键哈希固定上游，提高缓存命中率；无会话键时按项目固定。建议同时开启熔断。",
+    "strategy_session_affinity_title": "会话亲和调度",
+    "strategy_session_affinity_desc": "按会话键哈希固定上游，提高缓存命中率；无会话键时按项目固定。建议同时开启熔断。",
     "saving": "保存中...",
     "cancel": "取消"
   },

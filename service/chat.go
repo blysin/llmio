@@ -147,8 +147,8 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 		switch providersWithMeta.Strategy {
 		case consts.BalancerRotor:
 			b = balancers.NewRotor(items)
-		case consts.BalancerSmart:
-			b = balancers.NewSmart(items, routingKey)
+		case consts.BalancerSessionAffinity:
+			b = balancers.NewSessionAffinity(items, routingKey)
 		default:
 			b = balancers.NewLottery(items)
 		}

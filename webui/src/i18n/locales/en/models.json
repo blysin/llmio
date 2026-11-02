@@ -121,8 +121,8 @@
     "strategy_lottery_desc": "Randomly selects based on weight. Best for spreading traffic randomly.",
     "strategy_rotor_title": "Rotor",
     "strategy_rotor_desc": "Rotates sequentially by weight. Best for cache-hit scenarios.",
-    "strategy_smart_title": "Smart",
-    "strategy_smart_desc": "Pins a session to one upstream by hashing its session key for better cache hits; falls back to the project key. Enabling the circuit breaker is recommended.",
+    "strategy_session_affinity_title": "Session affinity",
+    "strategy_session_affinity_desc": "Pins each session to a stable upstream via weighted consistent hashing for better cache hits; falls back to the project key. Enabling the circuit breaker is recommended.",
     "saving": "Saving...",
     "cancel": "Cancel"
   },

@@ -15,21 +15,21 @@ import (
 func TestCreateModelStrategyValidation(t *testing.T) {
 	setupWritePathDB(t)
 
-	t.Run("接受 smart", func(t *testing.T) {
+	t.Run("接受 session_affinity", func(t *testing.T) {
 		w := doJSON(t, CreateModel, http.MethodPost, "/api/models", map[string]any{
-			"name":     "smart-model",
-			"strategy": consts.BalancerSmart,
+			"name":     "session-affinity-model",
+			"strategy": consts.BalancerSessionAffinity,
 		}, nil)
 		if code := envelopeCode(t, w); code != http.StatusOK {
 			t.Fatalf("业务码 = %d, want 200（原文 %s）", code, w.Body.String())
 		}
 
-		got, err := gorm.G[models.Model](models.DB).Where("name = ?", "smart-model").First(context.Background())
+		got, err := gorm.G[models.Model](models.DB).Where("name = ?", "session-affinity-model").First(context.Background())
 		if err != nil {
 			t.Fatalf("回查模型失败: %v", err)
 		}
-		if got.Strategy != consts.BalancerSmart {
-			t.Fatalf("strategy = %q, want %q", got.Strategy, consts.BalancerSmart)
+		if got.Strategy != consts.BalancerSessionAffinity {
+			t.Fatalf("strategy = %q, want %q", got.Strategy, consts.BalancerSessionAffinity)
 		}
 	})
 
@@ -75,18 +75,18 @@ func TestUpdateModelStrategyValidation(t *testing.T) {
 
 	w := doJSON(t, UpdateModel, http.MethodPut, "/api/models/1", map[string]any{
 		"name":     "gpt-4o",
-		"strategy": consts.BalancerSmart,
+		"strategy": consts.BalancerSessionAffinity,
 	}, params)
 	if code := envelopeCode(t, w); code != http.StatusOK {
-		t.Fatalf("更新 smart 业务码 = %d, want 200（原文 %s）", code, w.Body.String())
+		t.Fatalf("更新会话亲和业务码 = %d, want 200（原文 %s）", code, w.Body.String())
 	}
 
 	got, err := gorm.G[models.Model](models.DB).Where("id = ?", 1).First(context.Background())
 	if err != nil {
 		t.Fatalf("回查模型失败: %v", err)
 	}
-	if got.Strategy != consts.BalancerSmart {
-		t.Fatalf("strategy = %q, want %q", got.Strategy, consts.BalancerSmart)
+	if got.Strategy != consts.BalancerSessionAffinity {
+		t.Fatalf("strategy = %q, want %q", got.Strategy, consts.BalancerSessionAffinity)
 	}
 
 	w = doJSON(t, UpdateModel, http.MethodPut, "/api/models/1", map[string]any{
@@ -101,8 +101,8 @@ func TestUpdateModelStrategyValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("回查模型失败: %v", err)
 	}
-	if got.Strategy != consts.BalancerSmart {
-		t.Fatalf("非法更新后 strategy = %q, want 保持 %q", got.Strategy, consts.BalancerSmart)
+	if got.Strategy != consts.BalancerSessionAffinity {
+		t.Fatalf("非法更新后 strategy = %q, want 保持 %q", got.Strategy, consts.BalancerSessionAffinity)
 	}
 
 	w = doJSON(t, UpdateModel, http.MethodPut, "/api/models/1", map[string]any{
@@ -129,7 +129,7 @@ func TestGetModelsStrategyFilter(t *testing.T) {
 		strategy string
 	}{
 		{name: "lottery-model", strategy: consts.BalancerLottery},
-		{name: "smart-model", strategy: consts.BalancerSmart},
+		{name: "session-affinity-model", strategy: consts.BalancerSessionAffinity},
 	} {
 		w := doJSON(t, CreateModel, http.MethodPost, "/api/models", map[string]any{
 			"name":     tc.name,
@@ -140,16 +140,16 @@ func TestGetModelsStrategyFilter(t *testing.T) {
 		}
 	}
 
-	w := doJSON(t, GetModels, http.MethodGet, "/api/models?strategy=smart", nil, nil)
+	w := doJSON(t, GetModels, http.MethodGet, "/api/models?strategy=session_affinity", nil, nil)
 	if code := envelopeCode(t, w); code != http.StatusOK {
-		t.Fatalf("筛选 smart 业务码 = %d, want 200（原文 %s）", code, w.Body.String())
+		t.Fatalf("筛选 session_affinity 业务码 = %d, want 200（原文 %s）", code, w.Body.String())
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "smart-model") {
-		t.Fatalf("筛选 smart 结果缺少 smart-model：%s", body)
+	if !strings.Contains(body, "session-affinity-model") {
+		t.Fatalf("筛选 session_affinity 结果缺少 session-affinity-model：%s", body)
 	}
 	if strings.Contains(body, "lottery-model") {
-		t.Fatalf("筛选 smart 结果混入 lottery-model：%s", body)
+		t.Fatalf("筛选 session_affinity 结果混入 lottery-model：%s", body)
 	}
 
 	w = doJSON(t, GetModels, http.MethodGet, "/api/models?strategy=random", nil, nil)

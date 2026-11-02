@@ -296,7 +296,7 @@ func normalizeStrategy(raw string) (string, bool) {
 		return consts.BalancerDefault, true
 	}
 	switch strategy {
-	case consts.BalancerLottery, consts.BalancerRotor, consts.BalancerSmart:
+	case consts.BalancerLottery, consts.BalancerRotor, consts.BalancerSessionAffinity:
 		return strategy, true
 	default:
 		return "", false

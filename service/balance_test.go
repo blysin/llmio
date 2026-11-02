@@ -107,8 +107,8 @@ func runBalanceChatWithBody(t *testing.T, meta ProvidersWithMeta, sessionID stri
 	}, NewBridgeNotes())
 }
 
-// balanceTestSmartMeta 组装两个主关联的候选池，用于验证智能路由的固定落点。
-func balanceTestSmartMeta(firstBaseURL, secondBaseURL string) ProvidersWithMeta {
+// balanceTestSessionAffinityMeta 组装两个主关联的候选池，用于验证会话亲和调度的固定落点。
+func balanceTestSessionAffinityMeta(firstBaseURL, secondBaseURL string) ProvidersWithMeta {
 	return ProvidersWithMeta{
 		ModelWithProviderMap: map[uint]models.ModelWithProvider{
 			101: {Model: gorm.Model{ID: 101}, ProviderID: 1, ProviderModel: "first-model", Backup: new(false)},
@@ -121,19 +121,19 @@ func balanceTestSmartMeta(firstBaseURL, secondBaseURL string) ProvidersWithMeta 
 		},
 		MaxRetry: 3,
 		TimeOut:  5,
-		Strategy: consts.BalancerSmart,
+		Strategy: consts.BalancerSessionAffinity,
 	}
 }
 
-// pickSmartSession 找一个会命中指定关联的会话键，避免测试依赖哈希的偶然结果。
-func pickSmartSession(t *testing.T, items map[uint]int, want uint) string {
+// pickSessionAffinityKey 找一个会命中指定关联的会话键，避免测试依赖哈希的偶然结果。
+func pickSessionAffinityKey(t *testing.T, items map[uint]int, want uint) string {
 	t.Helper()
 	for i := 0; i < 1000; i++ {
-		sessionID := fmt.Sprintf("smart-pick-%d", i)
+		sessionID := fmt.Sprintf("affinity-pick-%d", i)
 		_, routingKey, _ := resolveSessionKeys(nil, sessionID, "test-model", 0, nil)
-		got, err := balancers.NewSmart(items, routingKey).Pop()
+		got, err := balancers.NewSessionAffinity(items, routingKey).Pop()
 		if err != nil {
-			t.Fatalf("NewSmart().Pop() error: %v", err)
+			t.Fatalf("NewSessionAffinity().Pop() error: %v", err)
 		}
 		if got == want {
 			return sessionID
@@ -150,7 +150,7 @@ func TestBalanceChatLogsStableSessionKey(t *testing.T) {
 
 	first, _ := newUpstream(t, http.StatusOK, `{"ok":true}`)
 	second, _ := newUpstream(t, http.StatusOK, `{"ok":true}`)
-	meta := balanceTestSmartMeta(first.URL, second.URL)
+	meta := balanceTestSessionAffinityMeta(first.URL, second.URL)
 
 	tests := []struct {
 		name       string
@@ -206,12 +206,12 @@ func TestBalanceChatLogsStableSessionKey(t *testing.T) {
 }
 
 // 同一会话两次请求必须固定到同一上游，且只调用它。
-func TestBalanceChatSmartSticky(t *testing.T) {
+func TestBalanceChatSessionAffinitySticky(t *testing.T) {
 	setupBalanceTestDB(t)
 
 	first, firstCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
 	second, secondCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
-	meta := balanceTestSmartMeta(first.URL, second.URL)
+	meta := balanceTestSessionAffinityMeta(first.URL, second.URL)
 
 	run := func() *models.ChatLog {
 		res, log, err := runBalanceChatWithSession(t, meta, "sticky-session", nil)
@@ -235,14 +235,14 @@ func TestBalanceChatSmartSticky(t *testing.T) {
 }
 
 // 429 只降权不移出：确定性选路下必须靠本请求内的回避集合换到下一家。
-func TestBalanceChatSmartRetriesAfter429(t *testing.T) {
+func TestBalanceChatSessionAffinityRetriesAfter429(t *testing.T) {
 	setupBalanceTestDB(t)
 
 	limited, limitedCalls := newUpstream(t, http.StatusTooManyRequests, `{"error":"rate limit"}`)
 	healthy, healthyCalls := newUpstream(t, http.StatusOK, `{"ok":true}`)
-	meta := balanceTestSmartMeta(limited.URL, healthy.URL)
+	meta := balanceTestSessionAffinityMeta(limited.URL, healthy.URL)
 
-	sessionID := pickSmartSession(t, meta.WeightItems, 101)
+	sessionID := pickSessionAffinityKey(t, meta.WeightItems, 101)
 
 	res, log, err := runBalanceChatWithSession(t, meta, sessionID, nil)
 	if err != nil {

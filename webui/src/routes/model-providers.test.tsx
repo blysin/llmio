@@ -639,18 +639,18 @@ describe("模型表单 · 负载均衡策略", () => {
     return user
   }
 
-  it("智能路由可选中并随请求提交", async () => {
+  it("会话亲和可选中并随请求提交", async () => {
     mocked.updateModel.mockResolvedValue(model())
     renderPage()
     const user = await openEdit()
 
-    await user.click(await screen.findByRole("checkbox", { name: /智能路由/ }))
+    await user.click(await screen.findByRole("checkbox", { name: /会话亲和/ }))
     await user.click(screen.getByRole("button", { name: "更新" }))
 
     await waitFor(() =>
       expect(mocked.updateModel).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ strategy: "smart" })
+        expect.objectContaining({ strategy: "session_affinity" })
       )
     )
   })

@@ -51,7 +51,7 @@ func ResolveSessionKey(header http.Header, sessionID, model string, authKeyID ui
 	return sessionKey
 }
 
-// resolveSessionKeys 一次解析出会话键、智能路由键，以及会话键是否稳定。
+// resolveSessionKeys 一次解析出会话键、会话亲和路由键，以及会话键是否稳定。
 // 路由键在会话键外再拼上 authKeyID 与 model，隔离不同项目/模型下同名的客户端
 // 会话；客户端没有给出任何会话线索时退化为项目级键，让同项目的这类请求仍有
 // 稳定落点。stable 为 false 表示会话键来自随机兜底或项目兜底，不用于日志展示。

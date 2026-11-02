@@ -81,6 +81,10 @@ func Init(ctx context.Context, path string) {
 	if _, err := gorm.G[Model](DB).Where("strategy = '' OR strategy IS NULL").Update(ctx, "strategy", consts.BalancerDefault); err != nil {
 		panic(err)
 	}
+	// 会话亲和策略早期取值是 "smart"，改名后不迁移会让已选该策略的模型静默退回默认策略。
+	if _, err := gorm.G[Model](DB).Where("strategy = ?", "smart").Update(ctx, "strategy", consts.BalancerSessionAffinity); err != nil {
+		panic(err)
+	}
 	if err := ensureModelDisplayOrder(ctx); err != nil {
 		panic(err)
 	}

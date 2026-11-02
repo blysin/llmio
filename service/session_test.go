@@ -120,7 +120,7 @@ func TestResolveSessionKeyRandomFallback(t *testing.T) {
 	})
 }
 
-// ── resolveSessionKeys：智能路由键 ──
+// ── resolveSessionKeys：会话亲和路由键 ──
 
 func TestResolveSessionKeysRoutingKey(t *testing.T) {
 	raw := []byte(`{"messages":[{"role":"user","content":"同一个对话"}]}`)

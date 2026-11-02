@@ -159,7 +159,7 @@ curl -X POST http://localhost:7070/api/models \
 
 - `max_retry` 必须大于 0。省略或为 0 时，请求不会尝试任何一次。
 - `time_out` 单位为秒。
-- `strategy` 为 `lottery`、`rotor` 或 `smart`。
+- `strategy` 为 `lottery`、`rotor` 或 `session_affinity`。
 - `prefer_direct` 省略时按开启处理。
 
 删除模型不会自动删除该模型下的关联。

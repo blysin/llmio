@@ -8,9 +8,10 @@ import (
 	"strconv"
 )
 
-// Smart 加权一致性哈希（Rendezvous / HRW）：相同路由键在候选集不变时始终命中
-// 同一个关联，候选增减时只迁移原本落在该关联上的键，因此不需要跨请求保存映射。
-type Smart struct {
+// SessionAffinity 会话亲和调度：按加权一致性哈希（Rendezvous / HRW）选路，
+// 相同路由键在候选集不变时始终命中同一个关联，候选增减时只迁移原本落在该
+// 关联上的键，因此不需要跨请求保存映射。
+type SessionAffinity struct {
 	store      map[uint]int
 	routingKey string
 	// avoid 记录本请求内被 429 的关联。确定性选路下仅降权常常仍会选中同一家
@@ -19,8 +20,8 @@ type Smart struct {
 	avoid map[uint]struct{}
 }
 
-func NewSmart(items map[uint]int, routingKey string) *Smart {
-	return &Smart{
+func NewSessionAffinity(items map[uint]int, routingKey string) *SessionAffinity {
+	return &SessionAffinity{
 		store:      items,
 		routingKey: routingKey,
 		avoid:      make(map[uint]struct{}),
@@ -39,14 +40,14 @@ func unit(h uint64) float64 {
 //
 // 这里用 sha256 而不是 FNV：会话键往往是 "session-1"、"session-2" 这类结构化
 // 短串，FNV 的雪崩性不足，权重悬殊时会整体偏向同一节点（单测可复现）。
-func (s *Smart) score(id uint, weight int) float64 {
+func (s *SessionAffinity) score(id uint, weight int) float64 {
 	key := s.routingKey + "|" + strconv.FormatUint(uint64(id), 10)
 	sum := sha256.Sum256([]byte(key))
 	h := binary.BigEndian.Uint64(sum[:8])
 	return -float64(weight) / math.Log(unit(h))
 }
 
-func (s *Smart) pick(skip map[uint]struct{}) (uint, bool) {
+func (s *SessionAffinity) pick(skip map[uint]struct{}) (uint, bool) {
 	var best uint
 	bestScore := math.Inf(-1)
 	found := false
@@ -66,7 +67,7 @@ func (s *Smart) pick(skip map[uint]struct{}) (uint, bool) {
 	return best, found
 }
 
-func (s *Smart) Pop() (uint, error) {
+func (s *SessionAffinity) Pop() (uint, error) {
 	if len(s.store) == 0 {
 		return 0, fmt.Errorf("no provide items or all items are disabled")
 	}
@@ -80,20 +81,20 @@ func (s *Smart) Pop() (uint, error) {
 	return 0, fmt.Errorf("total provide weight must be greater than 0")
 }
 
-func (s *Smart) Delete(key uint) {
+func (s *SessionAffinity) Delete(key uint) {
 	delete(s.store, key)
 	delete(s.avoid, key)
 }
 
-func (s *Smart) Reduce(key uint) {
+func (s *SessionAffinity) Reduce(key uint) {
 	if weight, ok := s.store[key]; ok {
 		s.store[key] = weight - weight/3
 	}
 	s.avoid[key] = struct{}{}
 }
 
-func (s *Smart) Success(uint) {}
+func (s *SessionAffinity) Success(uint) {}
 
-func (s *Smart) Empty() bool {
+func (s *SessionAffinity) Empty() bool {
 	return len(s.store) == 0
 }
