@@ -213,7 +213,8 @@ if [[ "$NO_CACHE" == 1 ]]; then DOCKER_BUILD_ARGS+=(--no-cache); fi
 # 1) 构建
 # ---------------------------------------------------------------------------
 echo "[1/4] docker build ..."
-docker build "${DOCKER_BUILD_ARGS[@]}" \
+# macOS 自带 bash 3.2，空数组在 set -u 下直接展开会报 unbound variable。
+docker build "${DOCKER_BUILD_ARGS[@]+"${DOCKER_BUILD_ARGS[@]}"}" \
   --build-arg "VERSION=${VERSION}" \
   -t "${LOCAL_IMAGE}:${VERSION}" \
   -t "${LOCAL_IMAGE}:latest" \
