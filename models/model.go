@@ -73,6 +73,16 @@ type ModelWithProvider struct {
 	// 与三档单价同处一行是刻意的：乘数就是乘在它们上面的，
 	// 拆到别处就会出现"价格改了、条款还指着旧的那套"的可能。
 	Peak *PeakTerms `gorm:"serializer:json"`
+	// Availability 这一条关联的可用时间窗，nil 表示 24×7 可用。
+	//
+	// 与 Peak 同处一行同样是刻意的：两者都是「这条关联自身的条款」，
+	// 且都只在选中这一条时才需要。拆表就要在热路径上多一次查询，
+	// 而这条行本来就每个请求都要读——挂在上面，可用性判定产生的额外 SQL 是 0。
+	//
+	// 判定语义见 models/availability.go 与 service/availability.go：
+	// nil 与 Enabled=false 都表示"不受时间限制"，两者的区别只在管理界面的
+	// 三态展示上（没配 / 配了但暂停）。
+	Availability *AvailabilityTerms `gorm:"serializer:json"`
 }
 
 // ChatLog 请求日志，也是分析聚合的事实表。

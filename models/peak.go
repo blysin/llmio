@@ -138,15 +138,28 @@ func ToDateOverrides(days []HolidayDay) map[string]string {
 	return out
 }
 
-// EffectiveTime 返回用于时段判定的时间，已转换到配置的时区。
-// 时区无法解析时退回原时间，调用方不应因此失败。
-func (c PeakCalendar) EffectiveTime(t time.Time) time.Time {
+// Location 返回用于判定"此刻是本地几点/星期几"的时区。
+//
+// 未配置或时区名无法解析时回落到 server 本地时区——这是注释里写明的约定，
+// 不是静默兜底：一个写错的时区名不该让代理请求全部失败，但也不该被当成 UTC
+// 悄悄错开八小时。
+//
+// 单独暴露 Location 而不是只给 EffectiveTime：可用性判定要拿时区去格式化
+// "下次开窗时间"，光有时间本身不够。两处共用同一个方法，才不会出现
+// "判定用东八区、提示用 UTC"这种自相矛盾的输出。
+func (c PeakCalendar) Location() *time.Location {
 	if c.Timezone == "" {
-		return t
+		return time.Local
 	}
 	loc, err := time.LoadLocation(c.Timezone)
 	if err != nil {
-		return t
+		return time.Local
 	}
-	return t.In(loc)
+	return loc
+}
+
+// EffectiveTime 返回用于时段判定的时间，已转换到配置的时区。
+// 时区无法解析时退回本地时区，调用方不应因此失败。
+func (c PeakCalendar) EffectiveTime(t time.Time) time.Time {
+	return t.In(c.Location())
 }

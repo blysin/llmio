@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/atopos31/llmio/consts"
 	"github.com/atopos31/llmio/models"
@@ -120,7 +121,7 @@ func TestProvidersWithMetaLogsHeaderSessionOnMissingModel(t *testing.T) {
 	before := Before{Model: "missing-model", raw: []byte(`{"model":"missing-model"}`)}
 	header := http.Header{"X-Session-Id": []string{"header-session"}}
 
-	if _, err := ProvidersWithMetaBymodelsName(ctx, header, consts.StyleOpenAI, before); err == nil {
+	if _, err := ProvidersWithMetaBymodelsName(ctx, header, consts.StyleOpenAI, before, time.Now()); err == nil {
 		t.Fatal("模型不存在时应返回 error")
 	}
 

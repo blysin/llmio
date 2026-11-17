@@ -1,0 +1,56 @@
+{
+  "title": "可用時間",
+  "description": "限制這條關聯在哪些時段參與負載均衡。時段外它不會被選中，請求會自動落到這個模型的其它關聯上。",
+  "mode": {
+    "label": "可用模式",
+    "unlimited": "不限時間",
+    "unlimited_hint": "24×7 隨時可用",
+    "allow": "僅這些時段可用",
+    "allow_hint": "只有選中的時段才參與路由",
+    "deny": "這些時段禁用",
+    "deny_hint": "選中的時段不參與路由"
+  },
+  "preset": {
+    "work_hours": "工作時間",
+    "weekdays": "僅工作日",
+    "all": "全選",
+    "none": "清空",
+    "invert": "反轉"
+  },
+  "selected_count": "已選 {{n}} / 336 個半小時",
+  "weekday": {
+    "0": "週日",
+    "1": "週一",
+    "2": "週二",
+    "3": "週三",
+    "4": "週四",
+    "5": "週五",
+    "6": "週六"
+  },
+  "grid": {
+    "toggle_row": "切換 {{day}} 全天"
+  },
+  "now": {
+    "label": "當前",
+    "available": "可用",
+    "unavailable": "不可用",
+    "next_change": "下次變更 {{time}}",
+    "never_changes": "一週內不變",
+    "timezone_hint": "按瀏覽器本地時區估算，實際判定以服務端時區為準"
+  },
+  "issue": {
+    "no_slots": "請至少選一個可用時段，或改為「不限時間」"
+  },
+  "action": {
+    "confirm": "確定"
+  },
+  "badge": {
+    "unlimited": "24×7",
+    "restricted": "限時",
+    "unavailable_now": "當前不可用"
+  },
+  "entry": {
+    "configure": "可用時間",
+    "summary_empty": "已限制但未選任何時段"
+  }
+}

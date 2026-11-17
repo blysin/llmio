@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,14 +99,29 @@ func chatHandler(c *gin.Context, preProcessor service.Beforer, postProcessor ser
 		common.ErrorWithHttpStatus(c, http.StatusForbidden, http.StatusForbidden, fmt.Sprintf("auth key has no permission to use %s", before.Model))
 		return
 	}
-	// 按模型获取可用 provider
-	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, c.Request.Header, style, *before)
+	// 按模型获取可用 provider。
+	//
+	// 请求发起时刻在这里取一次，选择上游与计价共用同一个基准：如果两处各取
+	// 一次 time.Now()，跨时段边界的请求会出现"按谷时计价、按峰时选上游"。
+	startReq := time.Now()
+	providersWithMeta, err := service.ProvidersWithMetaBymodelsName(ctx, c.Request.Header, style, *before, startReq)
 	if err != nil {
+		var noAvail *service.NoAvailabilityError
+		if errors.As(err, &noAvail) {
+			// 这是**可预期、会自行恢复**的状态，不是内部错误：所有上游都在
+			// 可用窗口外。给它 503 + Retry-After，客户端等一会儿再来就行，
+			// 500 只会让上游监控把它当成故障告警。
+			if d := noAvail.RetryAfter(); d > 0 {
+				// 向上取整到秒：0.4 秒向下取整会得到 Retry-After: 0，等于没给。
+				c.Header("Retry-After", strconv.Itoa(int((d+time.Second-1)/time.Second)))
+			}
+			common.ErrorWithHttpStatus(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		common.InternalServerError(c, err.Error())
 		return
 	}
 
-	startReq := time.Now()
 	// 协议互转的记账盒：转发路径往里写"改了什么"，日志落库时读
 	bridgeNotes := service.NewBridgeNotes()
 	// 调用负载均衡后的 provider 并转发

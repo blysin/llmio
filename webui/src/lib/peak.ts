@@ -128,8 +128,16 @@ export const PREVIEW_DAY_OPTIONS = [1, 3, 7, 14, 31]
 /** 星期在界面上的展示顺序：周一在前（与中文习惯一致，与 Go 的 0=周日 无关）。 */
 export const WEEKDAY_DISPLAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const
 
-/** 星期几的 i18n 键。取值 0=周日 … 6=周六。 */
-export function weekdayKey(day: number): string {
+/** 星期索引：0=周日 … 6=周六，与 WEEKDAY_DISPLAY_ORDER 的元素一致。 */
+export type Weekday = (typeof WEEKDAY_DISPLAY_ORDER)[number]
+
+/**
+ * 星期几的 i18n 键。取值 0=周日 … 6=周六。
+ *
+ * 返回字面量联合而非 string：i18n/index.ts 给 i18next 做了 key 强类型增强，
+ * 宽 string 拼出的模板 key 无法通过 t() 的类型检查。
+ */
+export function weekdayKey(day: Weekday): `weekday.${Weekday}` {
   return `weekday.${day}`
 }
 

@@ -729,7 +729,7 @@ func splitWeightItems(modelWithProviders []models.ModelWithProvider, providerMap
 	return weightItems, backupWeightItems
 }
 
-func ProvidersWithMetaBymodelsName(ctx context.Context, header http.Header, style string, before Before) (*ProvidersWithMeta, error) {
+func ProvidersWithMetaBymodelsName(ctx context.Context, header http.Header, style string, before Before, at time.Time) (*ProvidersWithMeta, error) {
 	authKeyID, _ := ctx.Value(consts.ContextKeyAuthKeyID).(uint)
 	logSessionID := stableSessionKey(header, before.SessionID, before.Model, authKeyID, before.raw)
 
@@ -769,6 +769,34 @@ func ProvidersWithMetaBymodelsName(ctx context.Context, header http.Header, styl
 		}
 		return nil, errors.New("not provider for model " + before.Model)
 	}
+
+	// 可用时间过滤：必须在 splitWeightItems **之前**完成。
+	// 放在之后的话，主池被时间窗清空时，备用池里同样在窗口外的关联仍会被
+	// 选中，时间窗等于摆设（见 service/availability.go 的规则 2）。
+	//
+	// at 由调用方传入**请求发起时刻**，而不是这里现取 time.Now()：
+	// BalanceChat 里 ResolvePricingFor 用的就是同一个 start，两边取不同
+	// 时刻会让跨时段边界的请求出现"按谷时计价、按峰时选上游"这种自相矛盾的组合。
+	totalAssocs := len(modelWithProviders)
+	calendar := GetPeakCalendar(ctx)
+	available, outside, nextOpen := filterByAvailability(modelWithProviders, at, calendar)
+	if len(available) == 0 {
+		// 与上面"关联一条都没有"刻意区分：那是配置错误，这是**会自行恢复**的
+		// 状态。运维看到 "not provider for model" 会去查是不是关联被删了，
+		// 而真实原因可能只是"现在 20:47，上游的窗口 18:00 就关了"。
+		noAvail := &NoAvailabilityError{
+			Model:    before.Model,
+			Outside:  outside,
+			Total:    totalAssocs,
+			At:       at,
+			NextOpen: nextOpen,
+		}
+		if _, err := saveFailedLog(ctx, style, before, logSessionID, noAvail.Error()); err != nil {
+			return nil, err
+		}
+		return nil, noAvail
+	}
+	modelWithProviders = available
 
 	modelWithProviderMap := lo.KeyBy(modelWithProviders, func(mp models.ModelWithProvider) uint { return mp.ID })
 

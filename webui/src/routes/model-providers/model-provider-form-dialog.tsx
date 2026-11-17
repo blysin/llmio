@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Clock } from "lucide-react";
 import type { Model, Provider, ProviderModel } from "@/lib/api";
 import type { ModelWithProvider } from "@/lib/api";
 import type { ModelProviderFormValues } from "./use-model-provider-form";
@@ -23,6 +23,9 @@ import { ModelAutofillPanel } from "./model-autofill-panel";
 import type { ModelMetadataCandidate } from "@/lib/api";
 import { PeakTermsEditor } from "./peak-terms-editor";
 import type { PeakTermsForm } from "@/lib/peak";
+import { AvailabilityDialog } from "./availability-dialog";
+import { slotsFromGrid, summarizeSlots } from "@/lib/availability";
+import type { AvailabilityForm } from "@/lib/availability";
 
 type ModelProviderFormDialogProps = {
   open: boolean;
@@ -45,6 +48,9 @@ type ModelProviderFormDialogProps = {
   peakTerms: PeakTermsForm | null;
   setPeakTerms: (next: PeakTermsForm | null) => void;
   peakSubmitAttempt: number;
+  /** 可用时间窗，null = 不限时间（24×7）。 */
+  availability: AvailabilityForm | null;
+  setAvailability: (next: AvailabilityForm | null) => void;
   /** 自动填写区要的全部状态（§5.1） */
   autofill: ModelAutofillState;
   onAutofillRefresh: () => void;
@@ -113,11 +119,24 @@ export function ModelProviderFormDialog({
   peakTerms,
   setPeakTerms,
   peakSubmitAttempt,
+  availability,
+  setAvailability,
   autofill,
   onAutofillRefresh,
   onAdoptCandidate,
 }: ModelProviderFormDialogProps) {
-  const { t } = useTranslation(['models', 'common']);
+  const { t } = useTranslation(['models', 'common', 'availability']);
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);
+
+  // 摘要只写"什么模式 + 选了哪些段"。列全部区间会在一周都配满时变成
+  // 一大段没人读的文字，而用户真正要看的是"这条到底限没限"。
+  const availabilitySummary = availability
+    ? [
+        t(`availability:mode.${availability.mode}`),
+        summarizeSlots(slotsFromGrid(availability.grid)) || t('availability:entry.summary_empty'),
+      ].join(' · ')
+    : t('availability:mode.unlimited_hint');
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* 只有标题没有说明文字，显式声明"没有描述"：不写的话 Radix 会
@@ -579,6 +598,40 @@ export function ModelProviderFormDialog({
                 value={peakTerms}
                 onChange={setPeakTerms}
                 submitAttempt={peakSubmitAttempt}
+              />
+
+              {/*
+                可用时间：跟峰谷条款是两件事——条款决定"值多少钱"，
+                可用时间决定"能不能被选中"。两者都挂在同一条关联上，
+                所以放在同一张表单里；但编辑体验差很多（一张 7×48 的网格），
+                因此单独开一个弹窗，这里只留摘要与入口。
+              */}
+              <div className="rounded-lg border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{t("availability:entry.configure")}</div>
+                    <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                      {availabilitySummary}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAvailabilityOpen(true)}
+                    className="shrink-0"
+                  >
+                    <Clock className="mr-1 size-4" aria-hidden="true" />
+                    {t("availability:entry.configure")}
+                  </Button>
+                </div>
+              </div>
+
+              <AvailabilityDialog
+                open={availabilityOpen}
+                onOpenChange={setAvailabilityOpen}
+                value={availability}
+                onConfirm={setAvailability}
               />
             </div>
 

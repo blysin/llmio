@@ -78,6 +78,8 @@ type ModelWithProviderRequest struct {
 	Currency        string            `json:"currency"`
 	// Peak 这一条关联自己的峰谷条款，nil 表示没配（按基础价计费）。
 	Peak *models.PeakTerms `json:"peak"`
+	// Availability 这一条关联自己的可用时间窗，nil 表示 24×7 可用。
+	Availability *models.AvailabilityTerms `json:"availability"`
 }
 
 // ModelProviderStatusRequest represents the request body for updating provider status
@@ -691,6 +693,13 @@ func CreateModelProvider(c *gin.Context) {
 		extraBody = map[string]any{}
 	}
 
+	// 校验并对 mode 做归一（空 mode → allow）。放在写库前：
+	// 一条画错的表格不该先落库、再等第一个请求撞上才发现。
+	if err := validateAvailability(req.Availability); err != nil {
+		common.BadRequest(c, err.Error())
+		return
+	}
+
 	modelProvider := models.ModelWithProvider{
 		ModelID:          req.ModelID,
 		ProviderModel:    req.ProviderModel,
@@ -708,6 +717,7 @@ func CreateModelProvider(c *gin.Context) {
 		OutputPrice:      &req.OutputPrice,
 		Currency:         req.Currency,
 		Peak:             req.Peak,
+		Availability:     req.Availability,
 	}
 
 	defaultStatus := true
@@ -759,6 +769,12 @@ func UpdateModelProvider(c *gin.Context) {
 		return
 	}
 
+	// 校验并对 mode 做归一，理由同 CreateModelProvider：画错的表格不该先落库。
+	if err := validateAvailability(req.Availability); err != nil {
+		common.BadRequest(c, err.Error())
+		return
+	}
+
 	updates := models.ModelWithProvider{
 		ModelID:          req.ModelID,
 		ProviderID:       req.ProviderID,
@@ -776,6 +792,7 @@ func UpdateModelProvider(c *gin.Context) {
 		OutputPrice:      &req.OutputPrice,
 		Currency:         req.Currency,
 		Peak:             req.Peak,
+		Availability:     req.Availability,
 	}
 
 	if _, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).Updates(c.Request.Context(), updates); err != nil {
@@ -783,13 +800,17 @@ func UpdateModelProvider(c *gin.Context) {
 		return
 	}
 
-	// 结构体更新会跳过零值，指针为 nil 正是"没配峰谷"的表达，因此它会被
-	// 整条跳过——用户把峰谷关掉后旧条款仍留在库里，下次开启会拿回一份陈年配置。
-	// 这里补一次显式清空。
+	// 结构体更新会跳过零值，指针为 nil 正是"没配"的表达，因此它会被整条跳过
+	// ——用户把配置删掉后旧值仍留在库里，下次打开表单又回来了。这里补一次显式清空。
 	if req.Peak == nil {
-		if _, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).
-			Update(c.Request.Context(), "peak", nil); err != nil {
+		if err := clearNullableColumn[models.ModelWithProvider](c.Request.Context(), uint(id), "peak"); err != nil {
 			common.InternalServerError(c, "Failed to clear peak terms: "+err.Error())
+			return
+		}
+	}
+	if req.Availability == nil {
+		if err := clearNullableColumn[models.ModelWithProvider](c.Request.Context(), uint(id), "availability"); err != nil {
+			common.InternalServerError(c, "Failed to clear availability: "+err.Error())
 			return
 		}
 	}

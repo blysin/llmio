@@ -68,11 +68,54 @@ import { useModelProviderForm } from "@/routes/model-providers/use-model-provide
 import { useModelProviderTesting } from "@/routes/model-providers/use-model-provider-testing";
 import { ModelProviderFormDialog } from "@/routes/model-providers/model-provider-form-dialog";
 import { ModelProviderTestDialog } from "@/routes/model-providers/model-provider-test-dialog";
+import { describeAvailability, summarizeSlots } from "@/lib/availability";
+import type { AvailabilityTerms } from "@/lib/availability";
 
 type MobileInfoItemProps = {
   label: string;
   value: ReactNode;
 };
+
+/**
+ * 可用时间徽标（列表行内的只读回显）。
+ *
+ * 三态：不限时间（灰）/ 限时且此刻可用（绿）/ 此刻不可用（橙）。
+ * 只提示不拦截：用户完全可能"先配好明天才生效"，标红不许保存等于把
+ * 能力边界画在错误的位置。
+ *
+ * 「此刻」按浏览器本地时区算，与配置时区可能不同，所以 tooltip 把具体区间
+ * 与下次变更时间都写出来，让人自己判断是不是时区造成的错觉。
+ */
+function AvailabilityBadge({ terms, now }: { terms: AvailabilityTerms | null; now: Date }) {
+  const { t } = useTranslation(["availability"]);
+  const badge = describeAvailability(terms, null, now);
+
+  if (badge.kind === "unlimited") {
+    return <span className="text-xs text-muted-foreground">{t("availability:badge.unlimited")}</span>;
+  }
+
+  const detail = terms ? summarizeSlots(terms.slots) : "";
+  const when = badge.nextChange
+    ? t("availability:now.next_change", {
+        time: badge.nextChange.toLocaleString(undefined, {
+          weekday: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      })
+    : t("availability:now.never_changes");
+
+  return (
+    <span
+      className={`text-xs whitespace-nowrap ${
+        badge.availableNow ? "text-status-good-ink" : "text-status-critical-ink"
+      }`}
+      title={[detail, when].filter(Boolean).join(" · ")}
+    >
+      {badge.availableNow ? t("availability:badge.restricted") : t("availability:badge.unavailable_now")}
+    </span>
+  );
+}
 
 type StrategyFilter = "all" | "lottery" | "rotor" | "session_affinity";
 
@@ -103,6 +146,13 @@ const modelEditSchema = z.object({
 
 export default function ModelProvidersPage() {
   const { t } = useTranslation(['models', 'common']);
+  /**
+   * 列表徽标里的「此刻」整表只取一次。
+   *
+   * 每行各取一次 new Date() 会让同一屏里出现几十个毫秒差，而徽标的用途是
+   * "一眼看出哪条现在不可用"，不是精确到毫秒的计时器。
+   */
+  const listNow = new Date();
   const [modelProviders, setModelProviders] = useState<ModelWithProvider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -305,6 +355,8 @@ export default function ModelProvidersPage() {
     peakTerms,
     setPeakTerms,
     peakSubmitAttempt,
+    availability,
+    setAvailability,
     autofill,
     refreshAutofill,
     adoptCandidate,
@@ -1102,6 +1154,7 @@ export default function ModelProvidersPage() {
                       <TableHead>{t('association_table.vision')}</TableHead>
                       <TableHead>{t('association_table.with_header')}</TableHead>
                       <TableHead>{t('association_table.weight')}</TableHead>
+                      <TableHead>{t('association_table.availability')}</TableHead>
                       <TableHead>{t('association_table.enabled')}</TableHead>
                       <TableHead>
                         <div className="flex items-center gap-1">{t('association_table.status')}
@@ -1162,6 +1215,9 @@ export default function ModelProvidersPage() {
                             </span>
                           </TableCell>
                           <TableCell>{association.Weight}</TableCell>
+                          <TableCell>
+                            <AvailabilityBadge terms={association.Availability} now={listNow} />
+                          </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
                               <Switch
@@ -1262,6 +1318,10 @@ export default function ModelProvidersPage() {
                       <MobileInfoItem label={t('association_table.mobile.provider_type')} value={provider?.Type ?? t('common:unknown')} />
                       <MobileInfoItem label={t('association_table.mobile.provider_id')} value={<span className="font-mono text-xs">{provider?.ID ?? '-'}</span>} />
                       <MobileInfoItem label={t('association_table.mobile.weight')} value={association.Weight} />
+                      <MobileInfoItem
+                        label={t('association_table.mobile.availability')}
+                        value={<AvailabilityBadge terms={association.Availability} now={listNow} />}
+                      />
                       <MobileInfoItem
                         label={t('association_table.mobile.with_header')}
                         value={<span className={association.WithHeader ? "text-green-600" : "text-red-600"}>{association.WithHeader ? '✓' : '✗'}</span>}
@@ -1595,6 +1655,8 @@ export default function ModelProvidersPage() {
         peakTerms={peakTerms}
         setPeakTerms={setPeakTerms}
         peakSubmitAttempt={peakSubmitAttempt}
+        availability={availability}
+        setAvailability={setAvailability}
         autofill={autofill}
         onAutofillRefresh={refreshAutofill}
         onAdoptCandidate={adoptCandidate}

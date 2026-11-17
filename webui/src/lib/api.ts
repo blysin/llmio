@@ -8,6 +8,7 @@ import type {
   QuotaTestResult,
 } from "@/lib/quota"
 import type { PeakCalendar, PeakHolidaySyncResult, PeakTerms, PreviewResult } from "@/lib/peak"
+import type { AvailabilityTerms } from "@/lib/availability"
 
 const API_BASE = '/api';
 
@@ -74,6 +75,8 @@ export interface ModelWithProvider {
   Currency: string;
   /** 这一条关联自己的峰谷条款；null = 没配（按基础价计费）。 */
   Peak: PeakTerms | null;
+  /** 这一条关联自己的可用时间窗；null = 24×7 不限时间。 */
+  Availability: AvailabilityTerms | null;
 }
 
 export interface PaginatedResponse<T> {
@@ -362,6 +365,8 @@ export async function createModelProvider(association: {
   currency: string;
   /** null 表示这条关联没有峰谷条款；后端会把它落成 NULL。 */
   peak: PeakTerms | null;
+  /** null 表示这条关联 24×7 可用；后端会把它落成 NULL。 */
+  availability: AvailabilityTerms | null;
 }): Promise<ModelWithProvider> {
   return apiRequest<ModelWithProvider>('/model-providers', {
     method: 'POST',
@@ -389,6 +394,11 @@ export async function updateModelProvider(id: number, association: {
    * 否则 GORM 会跳过这个 nil 指针、旧条款一直留在行上）。因此想保留就必须传。
    */
   peak?: PeakTerms | null;
+  /**
+   * 同 peak：省略或传 null 都会清空已有配置（后端补了一次显式写 NULL）。
+   * 想保留就必须传。
+   */
+  availability?: AvailabilityTerms | null;
 }): Promise<ModelWithProvider> {
   return apiRequest<ModelWithProvider>(`/model-providers/${id}`, {
     method: 'PUT',

@@ -1,0 +1,56 @@
+{
+  "title": "Availability window",
+  "description": "Restrict when this association takes part in load balancing. Outside these hours it is never picked, and requests fall through to the model's other associations.",
+  "mode": {
+    "label": "Availability mode",
+    "unlimited": "Always available",
+    "unlimited_hint": "24×7, no restriction",
+    "allow": "Only these hours",
+    "allow_hint": "Routed only inside the selected slots",
+    "deny": "Block these hours",
+    "deny_hint": "Never routed inside the selected slots"
+  },
+  "preset": {
+    "work_hours": "Work hours",
+    "weekdays": "Weekdays",
+    "all": "Select all",
+    "none": "Clear",
+    "invert": "Invert"
+  },
+  "selected_count": "{{n}} / 336 half-hour slots selected",
+  "weekday": {
+    "0": "Sun",
+    "1": "Mon",
+    "2": "Tue",
+    "3": "Wed",
+    "4": "Thu",
+    "5": "Fri",
+    "6": "Sat"
+  },
+  "grid": {
+    "toggle_row": "Toggle all day for {{day}}"
+  },
+  "now": {
+    "label": "Now",
+    "available": "available",
+    "unavailable": "unavailable",
+    "next_change": "next change {{time}}",
+    "never_changes": "no change within a week",
+    "timezone_hint": "Estimated in your browser's timezone; the server timezone is authoritative"
+  },
+  "issue": {
+    "no_slots": "Select at least one allowed slot, or switch to \"Always available\""
+  },
+  "action": {
+    "confirm": "OK"
+  },
+  "badge": {
+    "unlimited": "24×7",
+    "restricted": "Limited",
+    "unavailable_now": "Unavailable now"
+  },
+  "entry": {
+    "configure": "Availability",
+    "summary_empty": "Limited, but no slots selected"
+  }
+}

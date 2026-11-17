@@ -14,6 +14,8 @@ import {
 import type { AutofillFailureReason, AutofillField, AutofillReport, AutofillSnapshot } from "@/lib/model-autofill";
 import { termsFormToPayload, termsToForm, validateTermsForm } from "@/lib/peak";
 import type { PeakTermsForm } from "@/lib/peak";
+import { formToTerms, termsToForm as availabilityToForm, validateForm as validateAvailabilityForm } from "@/lib/availability";
+import type { AvailabilityForm } from "@/lib/availability";
 import { toast } from "sonner";
 
 const AUTOFILL_CONFIG_KEY = "model_autofill_policy";
@@ -123,6 +125,13 @@ export const useModelProviderForm = ({
   const [peakTerms, setPeakTerms] = useState<PeakTermsForm | null>(null);
   /** 保存被条款校验拦下的次数。>0 时条款编辑器才开始显示红色（它据此判断"用户试过了"）。 */
   const [peakSubmitAttempt, setPeakSubmitAttempt] = useState(0);
+  /**
+   * 可用时间窗，null = 不限时间（24×7）。
+   *
+   * 与 peakTerms 同理独立于 RHF：它是一张 7×48 的网格，塞进 zod schema 只会
+   * 变成一串没人读得懂的嵌套字段，而校验结论本来就是"选没选格子"这么一句话。
+   */
+  const [availability, setAvailability] = useState<AvailabilityForm | null>(null);
 
   const getDefaultFormValues = (overrideModelId?: number): ModelProviderFormValues => {
     const fallbackModelId = overrideModelId ?? selectedModelId ?? models[0]?.ID ?? 0;
@@ -497,7 +506,7 @@ export const useModelProviderForm = ({
     setAutofill((prev) => ({ ...emptyAutofill(prev.enabled, prev.overwrite), loading: false }));
   }, []);
 
-  const buildPayload = (values: ModelProviderFormValues, peak: PeakTermsForm | null) => {
+  const buildPayload = (values: ModelProviderFormValues, peak: PeakTermsForm | null, avail: AvailabilityForm | null) => {
     const headers: Record<string, string> = {};
     (values.customer_headers || []).forEach(({ key, value }) => {
       const trimmedKey = key.trim();
@@ -540,6 +549,12 @@ export const useModelProviderForm = ({
        * 请求体里就看得见，而不是要读一遍后端代码才知道省略等于清空。
        */
       peak: peak ? termsFormToPayload(peak) : null,
+      /**
+       * 同样无条件带上 availability。null 表示"不限时间"，不是"别动这一列"：
+       * 更新接口把省略与 null 都当作清空，显式传 null 让"取消时间限制"这条路径
+       * 在请求体里就看得见。
+       */
+      availability: formToTerms(avail),
     };
   };
 
@@ -574,6 +589,9 @@ export const useModelProviderForm = ({
     // 用 termsToForm 而不是直接塞 association.Peak：乘数在表单里是字符串
     // （见 lib/peak.ts 的 PeakPeriodForm），"8:30" 也要顺手归一成 "08:30"。
     setPeakTerms(association.Peak ? termsToForm(association.Peak) : null);
+    // 时间窗同样跟着这条关联走。enabled=false 的存量数据会被当成"不限时间"
+    // （两者在运行期等价），见 lib/availability.ts 文件头。
+    setAvailability(availabilityToForm(association.Availability));
     // 上一次保存被拦下的红色不能跟着飘到这一次打开：用户会以为新打开的这一条
     // 就有问题
     setPeakSubmitAttempt(0);
@@ -585,6 +603,7 @@ export const useModelProviderForm = ({
     setEditingAssociation(null);
     form.reset(getDefaultFormValues(modelId));
     setPeakTerms(null);
+    setAvailability(null);
     setPeakSubmitAttempt(0);
     resetAutofill();
     setOpen(true);
@@ -600,19 +619,26 @@ export const useModelProviderForm = ({
         return;
       }
     }
+    if (validateAvailabilityForm(availability).length > 0) {
+      // 弹窗里已经拦过一次，能走到这里说明是"配好之后又把格子清空了"。
+      // 不弹 toast 而是直接退回：用户下一步一定是打开弹窗，不需要再多一条提示。
+      toast.error("可用时间至少要选一个时段，或改为「不限时间」");
+      return;
+    }
     try {
       if (editingAssociation) {
-        await updateModelProvider(editingAssociation.ID, buildPayload(values, peakTerms));
+        await updateModelProvider(editingAssociation.ID, buildPayload(values, peakTerms, availability));
         toast.success("关联管理更新成功");
         setEditingAssociation(null);
       } else {
-        await createModelProvider(buildPayload(values, peakTerms));
+        await createModelProvider(buildPayload(values, peakTerms, availability));
         toast.success("关联管理创建成功");
       }
 
       setOpen(false);
       form.reset(getDefaultFormValues());
       setPeakTerms(null);
+      setAvailability(null);
       await onReload(values.model_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -653,6 +679,8 @@ export const useModelProviderForm = ({
     peakTerms,
     setPeakTerms,
     peakSubmitAttempt,
+    availability,
+    setAvailability,
     autofill,
     refreshAutofill,
     adoptCandidate,
