@@ -27,6 +27,15 @@ import { AvailabilityDialog } from "./availability-dialog";
 import { slotsFromGrid, summarizeSlots } from "@/lib/availability";
 import type { AvailabilityForm } from "@/lib/availability";
 
+/**
+ * 「不干预」在 Select 里的替身值。
+ *
+ * Radix 的 SelectItem 不接受空字符串当 value（"" 是它内部表示"清空"的哨兵），
+ * 而这里 "" 恰好是"用客户端传的"这个正经取值，所以在控件边界换一个哨兵转一手。
+ * 表单里存的仍然是 ""，提交给后端的也是 ""。
+ */
+const REASONING_EFFORT_OFF = "__off__";
+
 type ModelProviderFormDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -55,6 +64,10 @@ type ModelProviderFormDialogProps = {
   autofill: ModelAutofillState;
   onAutofillRefresh: () => void;
   onAdoptCandidate: (candidate: ModelMetadataCandidate) => void;
+  /** 思考档位：探测出来的可选值、是否来自上游声明、是否正在探测 */
+  effortOptions: string[];
+  effortProbed: boolean;
+  effortLoading: boolean;
 };
 
 function PriceInput({ value, onChange, onBlur, name }: {
@@ -124,6 +137,9 @@ export function ModelProviderFormDialog({
   autofill,
   onAutofillRefresh,
   onAdoptCandidate,
+  effortOptions,
+  effortProbed,
+  effortLoading,
 }: ModelProviderFormDialogProps) {
   const { t } = useTranslation(['models', 'common', 'availability']);
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
@@ -495,6 +511,83 @@ export function ModelProviderFormDialog({
                           {t('association_form.header_priority')}
                         </p>
                       </div>
+                    </FormItem>
+                  );
+                }}
+              />
+
+              <FormField
+                control={form.control}
+                name="reasoning_effort"
+                render={({ field }) => {
+                  /**
+                   * 已知档位的文案。上游探测出来的顺序（后端已按"关→想得最多"
+                   * 排好）优先，表里没有的值原样显示——那是某家网关自己的档位，
+                   * 编不出来就不编。
+                   *
+                   * 这里就地 t() 而不是查"值 → i18n key"的表：本项目的 i18next
+                   * 是强类型 key，动态 key 过不了类型检查。
+                   */
+                  const known = [
+                    { value: "none", label: t('association_form.reasoning_effort_none') },
+                    { value: "minimal", label: t('association_form.reasoning_effort_minimal') },
+                    { value: "low", label: t('association_form.reasoning_effort_low') },
+                    { value: "medium", label: t('association_form.reasoning_effort_medium') },
+                    { value: "high", label: t('association_form.reasoning_effort_high') },
+                    { value: "xhigh", label: t('association_form.reasoning_effort_xhigh') },
+                    { value: "max", label: t('association_form.reasoning_effort_max') },
+                  ];
+                  const options = effortOptions.map(
+                    (value) => known.find((item) => item.value === value) ?? { value, label: value },
+                  );
+                  // 库里存着的值不在当前清单里（换了上游、或通过接口写进来的）：
+                  // 也要能显示出来，否则下拉框是空的，用户以为自己没配过
+                  if (field.value && !options.some((item) => item.value === field.value)) {
+                    options.push({ value: field.value, label: field.value });
+                  }
+                  return (
+                    <FormItem>
+                      <FormLabel>{t('association_form.reasoning_effort')}</FormLabel>
+                      <Select
+                        value={field.value === "" ? REASONING_EFFORT_OFF : field.value}
+                        onValueChange={(value) =>
+                          field.onChange(value === REASONING_EFFORT_OFF ? "" : value)
+                        }
+                      >
+                        <FormControl>
+                          <SelectTrigger className="form-select w-full">
+                            {/* 显式给 children：Radix 在内容未展开时拿不到选中项的
+                                文案，编辑一条已配过等级的关联会出现空白下拉框 */}
+                            <SelectValue>
+                              {field.value === ""
+                                ? t('association_form.reasoning_effort_off')
+                                : options.find((item) => item.value === field.value)?.label ?? field.value}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value={REASONING_EFFORT_OFF}>
+                            {t('association_form.reasoning_effort_off')}
+                          </SelectItem>
+                          {options.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {t('association_form.reasoning_effort_desc')}
+                      </p>
+                      {/* 探测中不显示结论，避免"默认清单"闪一下又变成上游清单 */}
+                      {!effortLoading && (
+                        <p className="text-xs text-muted-foreground">
+                          {effortProbed
+                            ? t('association_form.reasoning_effort_probed')
+                            : t('association_form.reasoning_effort_fallback')}
+                        </p>
+                      )}
+                      <FormMessage />
                     </FormItem>
                   );
                 }}

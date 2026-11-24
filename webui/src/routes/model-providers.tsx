@@ -360,6 +360,9 @@ export default function ModelProvidersPage() {
     autofill,
     refreshAutofill,
     adoptCandidate,
+    effortOptions,
+    effortProbed,
+    effortLoading,
   } = useModelProviderForm({
     selectedModelId,
     models,
@@ -1660,6 +1663,9 @@ export default function ModelProvidersPage() {
         autofill={autofill}
         onAutofillRefresh={refreshAutofill}
         onAdoptCandidate={adoptCandidate}
+        effortOptions={effortOptions}
+        effortProbed={effortProbed}
+        effortLoading={effortLoading}
       />
 
       <ModelProviderTestDialog

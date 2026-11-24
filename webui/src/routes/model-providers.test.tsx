@@ -11,6 +11,7 @@ import {
   createModel,
   createModelProvider,
   deleteModel,
+  getModelEfforts,
   getModelMetadata,
   getModelOptions,
   getModelProviderStatus,
@@ -48,6 +49,7 @@ vi.mock("@/lib/api", () => ({
     updateConfig: vi.fn(),
   },
   getModelMetadata: vi.fn(),
+  getModelEfforts: vi.fn(),
   createModel: vi.fn(),
   createModelProvider: vi.fn(),
   deleteModel: vi.fn(),
@@ -80,6 +82,7 @@ const mocked = {
   previewPeakTerms: vi.mocked(previewPeakTerms),
   getConfig: vi.mocked(configAPI.getConfig),
   getModelMetadata: vi.mocked(getModelMetadata),
+  getModelEfforts: vi.mocked(getModelEfforts),
 }
 
 /**
@@ -198,6 +201,12 @@ beforeEach(async () => {
   mocked.getModelProviders.mockImplementation(async (id: number) => associationsOf(id))
   mocked.getModelProviderStatus.mockResolvedValue([true, false])
   mocked.getProviderModels.mockResolvedValue([])
+  // 打开关联对话框会在 400ms 后探测一次思考档位。不给默认回执的话，
+  // mock 返回 undefined，那条 `.then` 会当场抛——跑到第 400ms 的用例会随机红。
+  mocked.getModelEfforts.mockResolvedValue({
+    efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    probed: false,
+  })
   // 弹窗打开时会读一次自动填写策略。给一个"没配过"的回执（新装状态），
   // 预填按默认策略（开）走；不给的话 getConfig 返回 undefined，.then 会抛。
   mocked.getConfig.mockResolvedValue({ key: "model_autofill_policy", value: "" })
@@ -627,6 +636,62 @@ describe("模型表单 · 优先同协议", () => {
     await waitFor(() =>
       expect(mocked.updateModel).toHaveBeenCalledWith(1, expect.objectContaining({ prefer_direct: false }))
     )
+  })
+})
+
+describe("关联表单 · 强制思考等级", () => {
+  /**
+   * 这一组钉的是"选项从哪来"，因为它是这个功能唯一容易做错的地方：
+   * 档位不是网关定义的常量，而是**这家上游这一个模型**声明了什么。
+   */
+
+  it("上游声明了档位时，下拉框照它声明的来，并说明来源", async () => {
+    // max / xhigh 正是静态四档给不出的信息；medium 上游没声明，就不该出现
+    mocked.getModelEfforts.mockResolvedValue({
+      efforts: ["none", "low", "high", "xhigh", "max"],
+      probed: true,
+    })
+    const { user, dialog } = await openAssociationDialog()
+
+    // 探测是防抖 400ms 后发的，先等结论落地再点开下拉框
+    await waitFor(() =>
+      expect(within(dialog).getByText("可选档位来自上游 /models 的声明")).toBeInTheDocument()
+    )
+    await user.click(within(dialog).getByRole("combobox", { name: "强制思考等级" }))
+
+    expect(await screen.findByRole("option", { name: "最高 (max)" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "很高 (xhigh)" })).toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: "中 (medium)" })).not.toBeInTheDocument()
+  })
+
+  it("上游不声明时退化成六档，且明说这是默认清单，不假装问到了", async () => {
+    mocked.getModelEfforts.mockResolvedValue({
+      efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      probed: false,
+    })
+    const { user, dialog } = await openAssociationDialog()
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText("上游没有声明可选档位，以下为默认清单")
+      ).toBeInTheDocument()
+    )
+    await user.click(within(dialog).getByRole("combobox", { name: "强制思考等级" }))
+
+    expect(await screen.findByRole("option", { name: "关闭 (none)" })).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "最高 (max)" })).toBeInTheDocument()
+  })
+
+  it("配过等级的关联：打开即带回，保存时原样提交", async () => {
+    // 提交成空串等于把用户配好的等级静默清掉，而界面上看起来毫无变化
+    mocked.getModelProviders.mockResolvedValue([association({ ReasoningEffort: "high" })])
+    mocked.updateModelProvider.mockResolvedValue(association({ ReasoningEffort: "high" }))
+    const { user, dialog } = await openAssociationDialog()
+
+    await user.click(within(dialog).getByRole("button", { name: "更新" }))
+
+    await waitFor(() => expect(mocked.updateModelProvider).toHaveBeenCalledTimes(1))
+    expect(mocked.updateModelProvider.mock.calls[0][1].reasoning_effort).toBe("high")
   })
 })
 

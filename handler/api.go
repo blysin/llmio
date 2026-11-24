@@ -71,11 +71,17 @@ type ModelWithProviderRequest struct {
 	Backup          bool              `json:"backup"`
 	CustomerHeaders map[string]string `json:"customer_headers"`
 	ExtraBody       map[string]any    `json:"extra_body"`
-	Weight          int               `json:"weight"`
-	InputPrice      float64           `json:"input_price"`
-	CacheReadPrice  float64           `json:"cache_read_price"`
-	OutputPrice     float64           `json:"output_price"`
-	Currency        string            `json:"currency"`
+	// ReasoningEffort 强制覆盖客户端传来的思考等级（仅 OpenAI 系上游生效）。
+	//
+	// 指针是为了区分"这次没带这一项"（nil，**不动**库里已有的值）与"明确改回
+	// 不干预"（""）。用普通 string 的话，一个只改权重的老脚本 PUT 全文，
+	// 就会把用户配好的等级静默清掉——而它连这个字段名都没听过。
+	ReasoningEffort *string `json:"reasoning_effort"`
+	Weight          int     `json:"weight"`
+	InputPrice      float64 `json:"input_price"`
+	CacheReadPrice  float64 `json:"cache_read_price"`
+	OutputPrice     float64 `json:"output_price"`
+	Currency        string  `json:"currency"`
 	// Peak 这一条关联自己的峰谷条款，nil 表示没配（按基础价计费）。
 	Peak *models.PeakTerms `json:"peak"`
 	// Availability 这一条关联自己的可用时间窗，nil 表示 24×7 可用。
@@ -711,6 +717,7 @@ func CreateModelProvider(c *gin.Context) {
 		Backup:           &req.Backup,
 		CustomerHeaders:  customerHeaders,
 		ExtraBody:        extraBody,
+		ReasoningEffort:  strings.TrimSpace(lo.FromPtr(req.ReasoningEffort)),
 		Weight:           req.Weight,
 		InputPrice:       &req.InputPrice,
 		CacheReadPrice:   &req.CacheReadPrice,
@@ -811,6 +818,17 @@ func UpdateModelProvider(c *gin.Context) {
 	if req.Availability == nil {
 		if err := clearNullableColumn[models.ModelWithProvider](c.Request.Context(), uint(id), "availability"); err != nil {
 			common.InternalServerError(c, "Failed to clear availability: "+err.Error())
+			return
+		}
+	}
+
+	// "" 是 ReasoningEffort 的合法取值（不干预），而结构体更新会跳过零值——
+	// 用户把等级改回"不干预"时那次更新会整条跳过它，旧等级继续生效、界面上
+	// 却显示"不干预"。指针为 nil 则整段跳过：这次请求没提这一项，不该动它。
+	if req.ReasoningEffort != nil {
+		if _, err := gorm.G[models.ModelWithProvider](models.DB).Where("id = ?", id).
+			Update(c.Request.Context(), "reasoning_effort", strings.TrimSpace(*req.ReasoningEffort)); err != nil {
+			common.InternalServerError(c, "Failed to update reasoning_effort: "+err.Error())
 			return
 		}
 	}

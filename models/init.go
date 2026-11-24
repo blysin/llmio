@@ -96,6 +96,12 @@ func Init(ctx context.Context, path string) {
 	if _, err := gorm.G[Model](DB).Where("context_length IS NULL").Update(ctx, "context_length", 0); err != nil {
 		panic(err)
 	}
+	// reasoning_effort 同理：后加在**关联**上的非指针 string，存量行是 NULL。
+	// 回填空串才符合它的语义（空 = 不干预）——除此之外任何默认档位都会给老关联
+	// 凭空开一个强制思考等级，把它们的请求改掉。
+	if _, err := gorm.G[ModelWithProvider](DB).Where("reasoning_effort IS NULL").Update(ctx, "reasoning_effort", ""); err != nil {
+		panic(err)
+	}
 	if _, err := gorm.G[AuthKey](DB).Where("io_log IS NULL").Update(ctx, "io_log", false); err != nil {
 		panic(err)
 	}

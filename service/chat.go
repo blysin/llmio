@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/atopos31/llmio/pkg/token"
 	"github.com/atopos31/llmio/providers"
 	"github.com/samber/lo"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
@@ -334,6 +336,16 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 				continue
 			}
 
+			// 强制思考等级：这条关联上配了值就把客户端传的思考等级顶掉。
+			// 位置在协议翻译与 extra_body 之后——翻译层跨协议时会丢弃 thinking
+			// 相关字段（bridge/request.go），在它之前注入等于白写；而 extra_body
+			// 是用户手写的原始键，语义字段应当后落地、覆盖它。
+			// 取值来自**这一条关联**而不是模型：同一个模型挂在不同网关上时能吃的
+			// 档位并不一样，所以换一家上游就换一份配置。
+			// 上游协议不在白名单里时原样返回，见 reasoningEffortKeys。
+			beforeEffort := rawBody
+			rawBody = applyReasoningEffort(rawBody, provider.Type, modelWithProvider.ReasoningEffort)
+
 			// ---- 内层自愈闭环（计划 §3.5）：上游点名"不认识的参数"时，从实发
 			// 请求体删掉该参数、同一家立即重发。改的是实发字节，不重跑翻译与
 			// extra_body（同一家上游的翻译产物是确定的）；drops 随本轮外层迭代
@@ -347,6 +359,11 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 			drops := map[string]bool{}
 			healed := 0
 			downgraded := false
+			// 强制等级是否真的改动了实发 body：白名单外的协议、写失败、没配置、
+			// 以及配的值与客户端本来就传的一样（字节没变），都算没注入。专属
+			// 降级只对"我们塞进去的键"负责，客户端自己传的非法档位不归它管
+			effortInjected := !bytes.Equal(beforeEffort, rawBody)
+			effortDowngraded := false
 
 			var res *http.Response
 			nextProvider := false // 跳出内层后是否换下一家
@@ -406,6 +423,22 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 					}
 				}
 
+				// 强制思考等级的专属降级：上游点名拒收思考等级（参数或值）时，
+				// 删掉注入的键重发同一家。与通用删参分开是因为这类报文多是
+				// **值错误**（Unsupported value），短语表不认；独立预算每家一次，
+				// 不占删参额度。降级后回到"不干预"语义，请求本身不挂
+				if selfHeal.Enabled && effortInjected && !effortDowngraded &&
+					DetectEffortComplaint(res.StatusCode, byteBody) {
+					if next, dropped := DropReasoningEffort(rawBody); dropped {
+						effortDowngraded = true
+						rawBody = next
+						bridgeNotes.record([]bridge.Note{bridge.Note(EffortDowngradeNote)})
+						log.Retry = retry + healed + 1
+						fail(fmt.Errorf("status: %d, body: %s (downgrade: forced reasoning effort dropped)", res.StatusCode, string(byteBody)))
+						continue
+					}
+				}
+
 				// 工具内容数组的运行时降级：搬运过去的块数组被上游以类型错点名时，
 				// 压回纯文本（丢图、留文本）重发。与删参同一认识论——先发完整形状，
 				// 被点名拒收才降级且留痕；一条独立于删参预算（每家最多一次）
@@ -417,7 +450,7 @@ func BalanceChat(ctx context.Context, start time.Time, style string, before Befo
 						if droppedImgs > 0 {
 							bridgeNotes.record([]bridge.Note{bridge.NoteDroppedToolResultImage})
 						}
-						log.Retry = retry + healed + 1
+						log.Retry = retry + healed + lo.Ternary(effortDowngraded, 1, 0) + 1
 						fail(fmt.Errorf("status: %d, body: %s (downgrade: tool content to text, %d image(s) dropped)", res.StatusCode, string(byteBody), droppedImgs))
 						continue
 					}
@@ -511,6 +544,107 @@ func buildUpstreamBody(raw []byte, extraBody map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("delete session_id from upstream body: %w", err)
 	}
 	return rawBody, nil
+}
+
+// reasoningEffortKeys 把"思考等级"落到各家上游协议里的请求体路径。
+//
+// 只有 OpenAI 系的两种：chat completions 认顶层的 reasoning_effort，Responses
+// API 把它收进 reasoning.effort。这两家说的是同一个东西，只是键名不同。
+//
+// 刻意**不**包含 Anthropic 与 Gemini：那两家要的是 token 预算（thinking.budget_tokens
+// / thinkingBudget），与"等级"不是一回事。真要做就是一张等级→预算的映射表，
+// 那是另一个需求，不该以一个字符串字段的名义偷偷塞进来。
+var reasoningEffortKeys = map[string]string{
+	consts.StyleOpenAI:    "reasoning_effort",
+	consts.StyleOpenAIRes: "reasoning.effort",
+}
+
+// applyReasoningEffort 用关联上配置的等级覆盖客户端请求体里的思考等级。
+//
+// effort 为空表示不干预，直接返回原字节（这是存量模型的常态，零开销）。
+// 上游协议不在白名单里也原样返回：配置是模型级的，同一个模型下可能同时挂着
+// OpenAI 与 Anthropic 的上游，后者收不了这个键，写进去只会换一个 400。
+//
+// 写失败只记日志不中断——思考等级是增强项，不是路由决策。上游若明确拒收这个
+// 参数或档位值，专属降级（DetectEffortComplaint + DropReasoningEffort）会把它
+// 删掉后重发同一家，请求本身不会挂。不走通用删参：值错误（Unsupported value）
+// 的措辞短语表不认，见 effortComplaintPattern。
+func applyReasoningEffort(rawBody []byte, upstreamStyle, effort string) []byte {
+	if effort == "" {
+		return rawBody
+	}
+	path, ok := reasoningEffortKeys[upstreamStyle]
+	if !ok {
+		return rawBody
+	}
+	next, err := sjson.SetBytes(rawBody, path, effort)
+	if err != nil {
+		slog.Warn("force reasoning effort failed",
+			"style", upstreamStyle, "path", path, "effort", effort, "error", err)
+		return rawBody
+	}
+	// Responses API 的请求体里不该再有 chat completions 的顶层键：客户端从
+	// chat 请求改造过来的 body 常带着它。两个键并存时宽松网关取哪个说不准
+	// （强制可能静默失效），严格网关直接 400。写进 reasoning.effort 的同时
+	// 把旧键删掉，实发请求里思考等级只有一处来源。
+	if upstreamStyle == consts.StyleOpenAIRes {
+		if cleaned, derr := sjson.DeleteBytes(next, "reasoning_effort"); derr == nil {
+			next = cleaned
+		}
+	}
+	// 覆盖是静默的：客户端以为自己指定了 low、实际发出去的是 high，出问题时
+	// 只能靠这条日志还原现场（响应里看不出任何痕迹）
+	slog.Info("forced reasoning effort", "style", upstreamStyle, "effort", effort)
+	return next
+}
+
+// EffortDowngradeNote 强制思考等级被上游拒收后降级删除的记账短码。
+// 与自愈删参（self_heal_dropped:*）、工具内容降级（dropped_tool_result_image）
+// 同一族：请求侧被点名拒收才降级，且必须留痕。
+const EffortDowngradeNote = "dropped_forced_reasoning_effort"
+
+// effortComplaintPattern 识别上游对"思考等级"本身的拒绝——参数名或值被点名。
+// 典型报文（原生 OpenAI，模型不支持思考时）：
+//
+//	Unsupported value: 'reasoning_effort' does not support 'max' with this model.
+//
+// 这类**值错误**通用自愈的短语表（paramComplaintPatterns）一条都不认——那张表
+// 只管"参数不认识"。而强制档位最常见的失败恰恰是"参数认识、值/模型不认"，
+// 没有这条专属规则，配错档位的关联每条请求都会 400 后换家甚至整单失败。
+// 引号与前后边界都得放宽：真实报文并不统一用引号（vLLM/OpenRouter 一类写的是
+// "Unrecognized request argument supplied: reasoning.effort"，裸键无引号），
+// 而 Go 的 RE2 没有 lookaround，边界只能靠"前一个非词字符 + 后一个非词字符"
+// 这种双向夹逼表达，顺便把 reasoning_effort_v2 这类同前缀的无关参数挡在外面。
+var effortComplaintPattern = regexp.MustCompile(
+	`(?i)(?:^|[^\w.])['"\x60]?(?:reasoning_effort|reasoning\.effort)['"\x60]?(?:$|[^\w])`)
+
+// DetectEffortComplaint 判定一条上游错误是否点名了思考等级键。只在强制等级
+// 真的注入了这份请求体时才该被调用（见 chat.go 接线处的 effortInjected 闸）：
+// 客户端自己传的非法档位不归这条规则管，那是通用自愈/换家的地盘。
+func DetectEffortComplaint(status int, body []byte) bool {
+	if !healableStatusCodes[status] {
+		return false
+	}
+	return effortComplaintPattern.MatchString(complaintText(body))
+}
+
+// DropReasoningEffort 把思考等级键从实发请求体里删干净：顶层 reasoning_effort
+// 与 Responses 的 reasoning.effort 都删——上游点名的可能是其中任何一个，而这份
+// body 里两处都可能有值（见 applyReasoningEffort 的双写清理）。两个键都不在时
+// 返回原字节与 false，调用方据此不空转重发。
+func DropReasoningEffort(raw []byte) ([]byte, bool) {
+	if !gjson.GetBytes(raw, "reasoning_effort").Exists() &&
+		!gjson.GetBytes(raw, "reasoning.effort").Exists() {
+		return raw, false
+	}
+	out := raw
+	if next, err := sjson.DeleteBytes(out, "reasoning_effort"); err == nil {
+		out = next
+	}
+	if next, err := sjson.DeleteBytes(out, "reasoning.effort"); err == nil {
+		out = next
+	}
+	return out, true
 }
 
 func RecordRetryLog(ctx context.Context, retryLog chan retryLogEntry) {

@@ -63,6 +63,24 @@ type ModelWithProvider struct {
 	Backup          *bool
 	CustomerHeaders map[string]string `gorm:"serializer:json"` // 自定义headers
 	ExtraBody       map[string]any    `gorm:"serializer:json"` // 额外请求体参数
+	// ReasoningEffort 强制覆盖客户端请求体里的思考等级。空串 = 不干预（客户端传
+	// 什么就是什么），存量行回填成空串，因此加这一列不改变任何老关联的行为。
+	//
+	// 为什么挂在**关联**上而不是模型上：等级不是一个模型的固有属性，而是"这家
+	// 上游这个模型"能吃下什么。同一个模型名经不同网关转发时支持的档位并不一致
+	// （OpenRouter 会在 /models 里明说 supported_efforts，原生 OpenAI 一个都不说），
+	// 配在模型级就只能取交集或者取并集，两种都是错的。
+	//
+	// 只对 OpenAI 系上游生效（openai / openai-res，见 service.reasoningEffortKeys）：
+	// 这两家说的是同一个概念，只是 chat completions 叫 reasoning_effort、Responses
+	// API 收在 reasoning.effort。Anthropic 要的是 thinking.budget_tokens（token
+	// **预算**，不是等级）、Gemini 是 thinkingBudget，硬把等级糊上去只会换来 400，
+	// 所以那两种上游一律跳过。
+	//
+	// 值不做枚举校验：可选档位由界面从上游 /models 探测（见 service.SupportedEfforts），
+	// 探不到时退化成一份静态清单。上游拒收这个参数或档位值时，专属降级
+	// （service.DetectEffortComplaint）会把它删掉重发，请求不会因此失败。
+	ReasoningEffort string
 	Weight          int
 	InputPrice      *float64
 	CacheReadPrice  *float64

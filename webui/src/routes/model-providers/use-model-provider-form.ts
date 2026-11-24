@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
-import { configAPI, createModelProvider, defaultModelAutofillPolicy, getModelMetadata, updateModelProvider } from "@/lib/api";
+import { configAPI, createModelProvider, defaultModelAutofillPolicy, getModelEfforts, getModelMetadata, updateModelProvider } from "@/lib/api";
 import type { Model, ModelAutofillPolicy, ModelMetadataCandidate, ModelMetadataSuggestion, ModelWithProvider, ProviderModel } from "@/lib/api";
 import {
   AUTOFILL_FIELDS,
@@ -37,6 +37,16 @@ const AUTOFILL_DEBOUNCE_MS = 400;
  */
 const AUTOFILL_RETRY_MS = 5000;
 const AUTOFILL_MAX_RETRIES = 3;
+
+/**
+ * 思考档位的兜底清单。
+ *
+ * 与后端 service.FallbackEfforts 同一份（none/low/medium/high/xhigh/max，取值
+ * 来自 OpenRouter 的 supported_efforts 全集）。前端也留一份是因为对话框一打开
+ * 就得有选项可选，而等一次网络往返回来才渲染下拉框，等于每次打开都先看到一个
+ * 空控件。后端探测失败时回的也是这份清单，两处保持一致即可。
+ */
+const FALLBACK_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
 
 /** 上一次预填的状态，全部给界面用。 */
 export type ModelAutofillState = {
@@ -88,6 +98,10 @@ export const modelProviderFormSchema = z.object({
   weight: z.number().positive({ message: "权重必须大于0" }),
   customer_headers: z.array(headerPairSchema).default([]),
   extra_body: z.string().default(""),
+  // 强制思考等级，空串 = 不干预。**不**收窄成枚举：可选档位是探测出来的
+  // （见下面的 effortOptions），不同上游给的不一样，把六档写死进 schema 会让
+  // 通过接口写进来的自定义档位一打开表单就被判非法，连权重都改不了。
+  reasoning_effort: z.string().default(""),
   input_price: z.number().min(0).default(0),
   cache_read_price: z.number().min(0).default(0),
   output_price: z.number().min(0).default(0),
@@ -147,6 +161,7 @@ export const useModelProviderForm = ({
       weight: 1,
       customer_headers: [],
       extra_body: "",
+      reasoning_effort: "",
       input_price: 0,
       cache_read_price: 0,
       output_price: 0,
@@ -173,6 +188,58 @@ export const useModelProviderForm = ({
     }
     setShowProviderModels(false);
   }, [selectedProviderId, loadProviderModels]);
+
+  // -------------------------------------------------------------------------
+  // 思考档位探测
+  //
+  // 「强制思考等级」的可选值取决于**这家上游的这一个模型**：OpenRouter 一族在
+  // /models 的 reasoning.supported_efforts 里明说，原生 OpenAI / Anthropic /
+  // Gemini 一个字都不给。所以下拉框的选项是探测出来的，探不到才用兜底清单。
+  //
+  // 与自动填写用同一个触发条件与防抖（provider_id + provider_model、400ms）：
+  // 用户输入模型名时这两个请求本来就该一起发出去，搞两套防抖只会让它们前后脚
+  // 到达，界面上一会儿一个样子。
+  // -------------------------------------------------------------------------
+  const [effortOptions, setEffortOptions] = useState<string[]>(FALLBACK_EFFORTS);
+  /** 选项是否来自上游声明。false 时界面要说明"这是默认清单" */
+  const [effortProbed, setEffortProbed] = useState(false);
+  const [effortLoading, setEffortLoading] = useState(false);
+  /** 请求序号：只认最后一次的结果，先发后到的旧响应直接丢掉 */
+  const effortSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!open) return;
+    const model = (watchedProviderModel || "").trim();
+    if (!selectedProviderId || selectedProviderId <= 0 || !model) {
+      // 目标不完整：上一次探到的档位属于另一家上游，留着会让用户以为"这家也支持"
+      effortSeqRef.current += 1;
+      setEffortOptions(FALLBACK_EFFORTS);
+      setEffortProbed(false);
+      setEffortLoading(false);
+      return;
+    }
+
+    const seq = (effortSeqRef.current += 1);
+    setEffortLoading(true);
+    const timer = window.setTimeout(() => {
+      void getModelEfforts(selectedProviderId, model)
+        .then((res) => {
+          if (seq !== effortSeqRef.current) return;
+          setEffortOptions(res.efforts?.length ? res.efforts : FALLBACK_EFFORTS);
+          setEffortProbed(Boolean(res.probed));
+        })
+        .catch(() => {
+          if (seq !== effortSeqRef.current) return;
+          // 探测失败不是错误：拉不到就用兜底清单，用户该配什么配什么
+          setEffortOptions(FALLBACK_EFFORTS);
+          setEffortProbed(false);
+        })
+        .finally(() => {
+          if (seq === effortSeqRef.current) setEffortLoading(false);
+        });
+    }, AUTOFILL_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, selectedProviderId, watchedProviderModel]);
 
   // -------------------------------------------------------------------------
   // 自动填写（§5.1）
@@ -535,6 +602,14 @@ export const useModelProviderForm = ({
       backup: values.backup ?? false,
       customer_headers: headers,
       extra_body: extraBody,
+      /**
+       * 无条件带上，空串也带。
+       *
+       * 与 peak/availability 的"省略即清空"相反：这一列后端按指针区分"没提"
+       * 与"改成不干预"，省略等于"别动"。表单每次都把用户的当前选择原样发出去，
+       * 所以这里永远不会走到省略那条路上。
+       */
+      reasoning_effort: values.reasoning_effort ?? "",
       weight: values.weight,
       input_price: values.input_price ?? 0,
       cache_read_price: values.cache_read_price ?? 0,
@@ -580,6 +655,7 @@ export const useModelProviderForm = ({
       weight: association.Weight,
       customer_headers: headerPairs.length ? headerPairs : [],
       extra_body: extraBodyStr,
+      reasoning_effort: association.ReasoningEffort ?? "",
       input_price: association.InputPrice ?? 0,
       cache_read_price: association.CacheReadPrice ?? 0,
       output_price: association.OutputPrice ?? 0,
@@ -684,6 +760,9 @@ export const useModelProviderForm = ({
     autofill,
     refreshAutofill,
     adoptCandidate,
+    effortOptions,
+    effortProbed,
+    effortLoading,
     openEditDialog,
     openCreateDialog,
     submit,

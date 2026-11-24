@@ -342,3 +342,92 @@ func TestBalanceChat429NotSelfHealed(t *testing.T) {
 	}
 	waitForFailRows(t, "gpt-selfheal", 1)
 }
+
+// 强制思考等级被上游以**值错误**拒收（通用自愈短语表不认的形态）时，专属降级
+// 删掉注入的键重发同一家：客户端拿到 200，而不是 400 后换家/整单失败。
+func TestBalanceChatDowngradesForcedEffort(t *testing.T) {
+	setupSelfHealChatDB(t)
+	up := &pickyUpstream{errors: []string{"Unsupported value: 'reasoning_effort' does not support 'max' with this model."}}
+	server := httptest.NewServer(http.HandlerFunc(up.handler))
+	t.Cleanup(server.Close)
+
+	meta, before := selfHealFixture(t, server)
+	// 给关联配上强制档位：注入发生在翻译与 extra_body 之后
+	for id, assoc := range meta.ModelWithProviderMap {
+		assoc.ReasoningEffort = "max"
+		meta.ModelWithProviderMap[id] = assoc
+	}
+	notes := NewBridgeNotes()
+
+	res, log, err := BalanceChat(context.Background(), time.Now(), "openai", before, meta, models.ReqMeta{}, notes)
+	if err != nil {
+		t.Fatalf("BalanceChat: %v", err)
+	}
+	defer res.Body.Close()
+	log.Status = consts.StatusSuccess
+	if _, err := SaveChatLog(context.Background(), *log); err != nil {
+		t.Fatalf("save success log: %v", err)
+	}
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("客户端应拿到 200，实得 %d", res.StatusCode)
+	}
+	if up.requestCount() != 2 {
+		t.Fatalf("上游应收 2 发（值错误被拒 + 删键重发），实得 %d", up.requestCount())
+	}
+	last := gjson.Parse(up.lastBody())
+	if last.Get("reasoning_effort").Exists() {
+		t.Fatalf("重发的 body 仍带 reasoning_effort：%s", up.lastBody())
+	}
+	// 降级只删思考等级，别的字段（这里是客户端传的 top_k）不该被顺手删掉
+	if !last.Get("top_k").Exists() {
+		t.Fatalf("降级误伤了别的参数：%s", up.lastBody())
+	}
+	rows := waitChatLogs(t, "gpt-selfheal", 2)
+	errRows, okRows := 0, 0
+	for _, r := range rows {
+		switch r.Status {
+		case consts.StatusError:
+			errRows++
+			if !strings.Contains(r.Error, "(downgrade: forced reasoning effort dropped)") || !strings.Contains(r.Error, "Unsupported value") {
+				t.Fatalf("失败行原文应含 400 报文与降级标记：%q", r.Error)
+			}
+		case consts.StatusSuccess:
+			okRows++
+			if !strings.Contains(r.BridgeNotes, "dropped_forced_reasoning_effort") {
+				t.Fatalf("成功行记账缺 dropped_forced_reasoning_effort，实得 %q", r.BridgeNotes)
+			}
+			if strings.Contains(r.BridgeNotes, "self_heal_dropped") {
+				t.Fatalf("值错误走专属降级，不该有通用删参短码：%q", r.BridgeNotes)
+			}
+			if r.Retry != 1 {
+				t.Fatalf("成功行 Retry 应为 1（降级一次），实得 %d", r.Retry)
+			}
+		}
+	}
+	if errRows != 1 || okRows != 1 {
+		t.Fatalf("日志应为 1 失败 + 1 成功，实得 %d/%d", errRows, okRows)
+	}
+}
+
+// 没配强制等级时，客户端自己传的非法档位不归专属降级管：字节没被我们改过，
+// 值错误照旧走换家路径。降级只对"我们塞进去的键"负责。
+func TestBalanceChatClientEffortNotDowngraded(t *testing.T) {
+	setupSelfHealChatDB(t)
+	up := &pickyUpstream{errors: []string{"Unsupported value: 'reasoning_effort' does not support 'max' with this model."}}
+	server := httptest.NewServer(http.HandlerFunc(up.handler))
+	t.Cleanup(server.Close)
+
+	meta, before := selfHealFixture(t, server)
+	before.raw = []byte(`{"model":"gpt-selfheal","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}`)
+	meta.MaxRetry = 1
+
+	_, _, err := BalanceChat(context.Background(), time.Now(), "openai", before, meta, models.ReqMeta{}, NewBridgeNotes())
+	if err == nil {
+		t.Fatal("客户端自己传的非法档位应照旧失败")
+	}
+	if up.requestCount() != 1 {
+		t.Fatalf("专属降级不该对客户端的值出手，实发 %d 次", up.requestCount())
+	}
+	waitForFailRows(t, "gpt-selfheal", 1)
+}

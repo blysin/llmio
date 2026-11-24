@@ -171,6 +171,7 @@ curl -X POST http://localhost:7070/api/models \
 | `/api/model-providers` | GET | 列表，必须提供 `model_id` 查询参数。 |
 | `/api/model-providers/status` | GET | 查询一条关联最近 10 次请求的成功/失败状态。需要 `provider_id`、`model_name`、`provider_model`。 |
 | `/api/model-providers/metadata` | GET | 返回模型能力与价格建议。需要 `provider_id`、`provider_model`。 |
+| `/api/model-providers/efforts` | GET | 探测该上游这个模型支持哪些思考档位。需要 `provider_id`、`provider_model`。 |
 | `/api/model-providers` | POST | 创建。 |
 | `/api/model-providers/:id` | PUT | 更新。 |
 | `/api/model-providers/:id/status` | PATCH | 启用或停用。 |
@@ -208,7 +209,27 @@ curl -X POST http://localhost:7070/api/model-providers \
 - `backup` 为 `true` 时进入备用池。
 - `customer_headers` 是字符串到字符串的映射。
 - `extra_body` 是任意 JSON 对象，会合并进上游请求体。
+- `reasoning_effort` 是这条关联的**强制思考等级**，可选。配了值就把客户端请求里的
+  思考等级顶掉；省略表示不改动库里已有的设置，传空串才是明确改回"不干预"（用客户端
+  传的值）。档位不做白名单校验，界面上的可选值来自
+  `GET /api/model-providers/efforts` 的探测结果，探不到时用
+  `none / low / medium / high / xhigh / max`。
+  只对 OpenAI 协议的上游生效：chat completions 写 `reasoning_effort`，Responses API
+  写 `reasoning.effort`（并清理请求体里残留的顶层 `reasoning_effort`，避免双写）；
+  Anthropic 与 Gemini 的思考参数是 token 预算而不是等级，会被跳过。上游拒收这个
+  参数或档位值（含 `Unsupported value` 一类值错误）时，专属降级会把它删掉重发
+  同一家（每家最多一次，记账 `dropped_forced_reasoning_effort`），请求不会因此失败。
 - `peak` 可选，结构见[峰谷计费](Peak-Billing)。
+
+探测端点返回：
+
+```json
+{ "efforts": ["none", "low", "medium", "high", "xhigh", "max"], "probed": false }
+```
+
+`probed=false` 表示上游没有声明（原生 OpenAI / Anthropic / Gemini 的 `/models` 里
+没有这个概念），此时 `efforts` 就是上面那份兜底清单。端点永远返回 200——探测失败
+是"我们不知道"，不是错误。
 
 启用/停用：
 

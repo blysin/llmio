@@ -67,6 +67,15 @@ export interface ModelWithProvider {
   Backup?: boolean | null;
   CustomerHeaders: Record<string, string> | null;
   ExtraBody: Record<string, unknown> | null;
+  /**
+   * 强制覆盖客户端传来的思考等级，空串 = 不干预。
+   *
+   * 挂在关联上而不是模型上：同一个模型名经不同网关转发时能吃的档位不一样
+   * （取决于那家上游怎么实现），配在模型级只能取交集或并集，都是错的。
+   * 只对 OpenAI 系提供商生效——Anthropic、Gemini 的思考参数是 token 预算
+   * 而不是等级，后端会跳过它们。见 models.ModelWithProvider.ReasoningEffort。
+   */
+  ReasoningEffort?: string;
   Status: boolean | null;
   Weight: number;
   InputPrice: number;
@@ -358,6 +367,8 @@ export async function createModelProvider(association: {
   with_header: boolean;
   customer_headers: Record<string, string>;
   extra_body: Record<string, unknown>;
+  /** 强制思考等级，空串 = 不干预；可选档位由 getModelEfforts 探测。 */
+  reasoning_effort?: string;
   weight: number;
   input_price: number;
   cache_read_price: number;
@@ -384,6 +395,12 @@ export async function updateModelProvider(id: number, association: {
   with_header?: boolean;
   customer_headers?: Record<string, string>;
   extra_body?: Record<string, unknown>;
+  /**
+   * 强制思考等级。**省略 = 后端不动库里已有的值**，`""` 才是明确改回不干预
+   * （后端按指针区分这两件事）。与 peak/availability 的"省略即清空"不同，
+   * 这里是刻意的：老脚本 PUT 全文时不该静默清掉用户配好的等级。
+   */
+  reasoning_effort?: string;
   weight?: number;
   input_price?: number;
   cache_read_price?: number;
@@ -469,6 +486,28 @@ export async function getModelMetadata(providerId: number, providerModel: string
     provider_model: providerModel,
   });
   return apiRequest<ModelMetadataSuggestion>(`/model-providers/metadata?${params.toString()}`);
+}
+
+/**
+ * 探测某个上游为某个模型声明的思考档位（GET /api/model-providers/efforts）。
+ *
+ * `probed=false` 表示没探到——原生 OpenAI / Anthropic / Gemini 的 /models 里
+ * 没有这个概念，此时 `efforts` 就是后端给的兜底清单。界面照用即可，但要能
+ * 说清楚"这是默认清单"而不是假装问到了。
+ *
+ * 这个端点永远 200：探测失败是"我们不知道"，不是错误。
+ */
+export interface ModelEffortsProbe {
+  efforts: string[];
+  probed: boolean;
+}
+
+export async function getModelEfforts(providerId: number, providerModel: string): Promise<ModelEffortsProbe> {
+  const params = new URLSearchParams({
+    provider_id: providerId.toString(),
+    provider_model: providerModel,
+  });
+  return apiRequest<ModelEffortsProbe>(`/model-providers/efforts?${params.toString()}`);
 }
 
 export async function updateModelProviderStatus(id: number, status: boolean): Promise<ModelWithProvider> {

@@ -168,6 +168,8 @@ func main() {
 		api.GET("/model-providers/status", handler.GetModelProviderStatus)
 		// 只读建议端点：自动填写用，不参与写入路径（见 handler.GetModelProviderMetadata）
 		api.GET("/model-providers/metadata", handler.GetModelProviderMetadata)
+		// 只读探测端点：问上游 /models 这个模型认哪些思考档位，同样不写入
+		api.GET("/model-providers/efforts", handler.GetModelProviderEfforts)
 		api.POST("/model-providers", handler.CreateModelProvider)
 		api.PUT("/model-providers/:id", handler.UpdateModelProvider)
 		api.PATCH("/model-providers/:id/status", handler.UpdateModelProviderStatus)
